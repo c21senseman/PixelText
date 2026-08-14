@@ -109,17 +109,17 @@ test("selection deletion and undo restore cells, cursor, and selection", () => {
   assert.equal(editor.document.getCell(1, 0), null);
 });
 
-test("arrow keys collapse a rectangular selection to the requested edge", () => {
+test("arrow keys clear a rectangular selection and move from the current cursor", () => {
   const editor = new EditorModel();
   editor.setCursor({ x: 4, y: 3 });
-  editor.setSelection({ x1: 2, y1: 1, x2: 5, y2: 4 });
+  editor.setSelection({ x1: 2, y1: 1, x2: 8, y2: 6 });
   editor.moveCursor(1, 0);
   assert.deepEqual(editor.cursor, { x: 5, y: 3 });
   assert.equal(editor.selection, null);
 
-  editor.setSelection({ x1: 2, y1: 1, x2: 5, y2: 4 });
+  editor.setSelection({ x1: 2, y1: 1, x2: 8, y2: 6 });
   editor.moveCursor(0, -1);
-  assert.deepEqual(editor.cursor, { x: 5, y: 1 });
+  assert.deepEqual(editor.cursor, { x: 5, y: 2 });
   assert.equal(editor.selection, null);
 });
 

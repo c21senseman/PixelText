@@ -289,11 +289,19 @@ export type MinimapTransform = {
   padding: number;
 };
 
+export const MIN_MINIMAP_ZOOM = 1;
+export const MAX_MINIMAP_ZOOM = 16;
+
+export function clampMinimapZoom(zoom: number): number {
+  return Math.min(MAX_MINIMAP_ZOOM, Math.max(MIN_MINIMAP_ZOOM, zoom));
+}
+
 export function drawMinimap(
   canvas: HTMLCanvasElement,
   document: SparseDocument,
   camera: Camera,
   editorViewport: Viewport,
+  minimapZoom = MIN_MINIMAP_ZOOM,
 ): MinimapTransform | null {
   const resized = resizeCanvas(canvas, 4);
   if (!resized) return null;
@@ -301,35 +309,79 @@ export function drawMinimap(
   context.clearRect(0, 0, viewport.width, viewport.height);
 
   const viewBounds = viewportCellBounds(camera, editorViewport);
-  let worldMinX = viewBounds.x1;
-  let worldMinY = viewBounds.y1;
-  let worldMaxX = viewBounds.x2;
-  let worldMaxY = viewBounds.y2;
-  const chunkKeys = document.chunkKeys();
-  for (const key of chunkKeys) {
-    const chunk = parseChunkKey(key);
-    worldMinX = Math.min(worldMinX, chunk.x * CHUNK_SIZE);
-    worldMinY = Math.min(worldMinY, chunk.y * CHUNK_SIZE);
-    worldMaxX = Math.max(worldMaxX, (chunk.x + 1) * CHUNK_SIZE);
-    worldMaxY = Math.max(worldMaxY, (chunk.y + 1) * CHUNK_SIZE);
+  const contentBounds = document.bounds();
+  let baseMinX = viewBounds.x1;
+  let baseMinY = viewBounds.y1;
+  let baseMaxX = viewBounds.x2;
+  let baseMaxY = viewBounds.y2;
+  if (contentBounds) {
+    const contentWidth = Math.max(1, contentBounds.maxX - contentBounds.minX);
+    const contentHeight = Math.max(1, contentBounds.maxY - contentBounds.minY);
+    const margin = Math.min(
+      64,
+      Math.max(4, Math.ceil(Math.max(contentWidth, contentHeight) * 0.06)),
+    );
+    baseMinX = contentBounds.minX - margin;
+    baseMinY = contentBounds.minY - margin;
+    baseMaxX = contentBounds.maxX + margin;
+    baseMaxY = contentBounds.maxY + margin;
   }
 
+  const chunkKeys = document.chunkKeys();
+
   const padding = 10;
-  const worldWidth = Math.max(1, worldMaxX - worldMinX);
-  const worldHeight = Math.max(1, worldMaxY - worldMinY);
+  const worldWidth = Math.max(1, baseMaxX - baseMinX);
+  const worldHeight = Math.max(1, baseMaxY - baseMinY);
   const availableWidth = Math.max(1, viewport.width - padding * 2);
   const availableHeight = Math.max(1, viewport.height - padding * 2);
-  const scale = Math.min(availableWidth / worldWidth, availableHeight / worldHeight);
-  const offsetX = padding + (availableWidth - worldWidth * scale) / 2;
-  const offsetY = padding + (availableHeight - worldHeight * scale) / 2;
+  const zoom = clampMinimapZoom(minimapZoom);
+  const scale = Math.min(
+    availableWidth / worldWidth,
+    availableHeight / worldHeight,
+  ) * zoom;
+  const visibleWorldWidth = availableWidth / scale;
+  const visibleWorldHeight = availableHeight / scale;
+  const contentCenterX = (baseMinX + baseMaxX) / 2;
+  const contentCenterY = (baseMinY + baseMaxY) / 2;
+  const minCenterX = baseMinX + visibleWorldWidth / 2;
+  const maxCenterX = baseMaxX - visibleWorldWidth / 2;
+  const minCenterY = baseMinY + visibleWorldHeight / 2;
+  const maxCenterY = baseMaxY - visibleWorldHeight / 2;
+  const focusX = minCenterX <= maxCenterX
+    ? Math.min(maxCenterX, Math.max(minCenterX, camera.x))
+    : contentCenterX;
+  const focusY = minCenterY <= maxCenterY
+    ? Math.min(maxCenterY, Math.max(minCenterY, camera.y))
+    : contentCenterY;
+  const worldMinX = focusX - visibleWorldWidth / 2;
+  const worldMinY = focusY - visibleWorldHeight / 2;
+  const worldMaxX = focusX + visibleWorldWidth / 2;
+  const worldMaxY = focusY + visibleWorldHeight / 2;
+  const offsetX = padding;
+  const offsetY = padding;
+
+  context.save();
+  context.beginPath();
+  context.rect(offsetX, offsetY, availableWidth, availableHeight);
+  context.clip();
 
   const devicePixel = 1 / dpr;
   for (const key of chunkKeys) {
     const coordinates = parseChunkKey(key);
     const chunk = document.getChunk(key);
     if (!chunk) continue;
-    const chunkX = offsetX + (coordinates.x * CHUNK_SIZE - worldMinX) * scale;
-    const chunkY = offsetY + (coordinates.y * CHUNK_SIZE - worldMinY) * scale;
+    const chunkWorldX = coordinates.x * CHUNK_SIZE;
+    const chunkWorldY = coordinates.y * CHUNK_SIZE;
+    if (
+      chunkWorldX + CHUNK_SIZE <= worldMinX ||
+      chunkWorldX >= worldMaxX ||
+      chunkWorldY + CHUNK_SIZE <= worldMinY ||
+      chunkWorldY >= worldMaxY
+    ) {
+      continue;
+    }
+    const chunkX = offsetX + (chunkWorldX - worldMinX) * scale;
+    const chunkY = offsetY + (chunkWorldY - worldMinY) * scale;
     const chunkScreenSize = CHUNK_SIZE * scale;
 
     if (chunkScreenSize >= 4) {
@@ -361,6 +413,7 @@ export function drawMinimap(
   context.strokeStyle = "rgba(82, 97, 230, 0.9)";
   context.lineWidth = 1.5;
   context.strokeRect(cameraX + 0.75, cameraY + 0.75, cameraWidth - 1.5, cameraHeight - 1.5);
+  context.restore();
 
   return { worldMinX, worldMinY, scale, offsetX, offsetY, padding };
 }

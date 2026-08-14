@@ -106,22 +106,6 @@ export class EditorModel {
   }
 
   moveCursor(dx: number, dy: number): void {
-    if (this.selection) {
-      const selection = this.selection;
-      const x = Math.min(
-        selection.x2,
-        Math.max(selection.x1, this.cursor.x),
-      );
-      const y = Math.min(
-        selection.y2,
-        Math.max(selection.y1, this.cursor.y),
-      );
-      this.setCursor({
-        x: dx < 0 ? selection.x1 : dx > 0 ? selection.x2 : x,
-        y: dy < 0 ? selection.y1 : dy > 0 ? selection.y2 : y,
-      });
-      return;
-    }
     this.setCursor({
       x: safeAdd(this.cursor.x, dx),
       y: safeAdd(this.cursor.y, dy),

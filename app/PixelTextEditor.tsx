@@ -16,8 +16,11 @@ import { EditorModel } from "@/lib/editor";
 import { segmentGraphemes } from "@/lib/graphemes";
 import { exportJson, exportTxt, importJson } from "@/lib/io";
 import {
+  MAX_MINIMAP_ZOOM,
+  MIN_MINIMAP_ZOOM,
   MinimapTransform,
   cellMetrics,
+  clampMinimapZoom,
   drawEditorCanvas,
   drawMinimap,
   logicalToScreen,
@@ -106,6 +109,7 @@ export default function PixelTextEditor() {
     dx: number;
     dy: number;
   } | null>(null);
+  const [minimapZoom, setMinimapZoom] = useState(MIN_MINIMAP_ZOOM);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const minimapRef = useRef<HTMLCanvasElement>(null);
@@ -322,6 +326,7 @@ export default function PixelTextEditor() {
         editor.document,
         cameraRef.current,
         { width: rect.width, height: rect.height },
+        minimapZoom,
       );
     }
     const input = textareaRef.current;
@@ -334,7 +339,7 @@ export default function PixelTextEditor() {
       input.style.left = `${Math.min(rect.width - 2, Math.max(1, point.x))}px`;
       input.style.top = `${Math.min(rect.height - 2, Math.max(1, point.y))}px`;
     }
-  }, [composition, editor, searchQuery, selectionPreview]);
+  }, [composition, editor, minimapZoom, searchQuery, selectionPreview]);
 
   useEffect(() => {
     drawLatestRef.current = drawLatest;
@@ -342,7 +347,7 @@ export default function PixelTextEditor() {
 
   useEffect(() => {
     requestRender();
-  }, [composition, ready, requestRender, revision, searchQuery, selectionPreview]);
+  }, [composition, minimapZoom, ready, requestRender, revision, searchQuery, selectionPreview]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -659,6 +664,8 @@ export default function PixelTextEditor() {
     event.currentTarget.classList.remove("is-panning");
     if (drag.kind === "move" && (drag.dx !== 0 || drag.dy !== 0)) {
       runAction(() => editor.moveSelection(drag.dx, drag.dy));
+    } else if (drag.kind === "move") {
+      editor.setCursor(drag.start);
     } else if (drag.kind === "select" && !drag.moved) {
       editor.setSelection(null);
       editor.setCursor(drag.anchor);
@@ -704,6 +711,27 @@ export default function PixelTextEditor() {
       canvas.removeEventListener("wheel", handleWheel, { capture: true });
     };
   }, [handleWheel]);
+
+  const handleMinimapWheel = useCallback((event: globalThis.WheelEvent) => {
+    if (!event.ctrlKey && !event.metaKey) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setMinimapZoom((current) => clampMinimapZoom(
+      current * Math.exp(-event.deltaY * 0.002),
+    ));
+  }, []);
+
+  useEffect(() => {
+    const minimap = minimapRef.current;
+    if (!minimap) return;
+    minimap.addEventListener("wheel", handleMinimapWheel, {
+      passive: false,
+      capture: true,
+    });
+    return () => {
+      minimap.removeEventListener("wheel", handleMinimapWheel, { capture: true });
+    };
+  }, [handleMinimapWheel]);
 
   const updateSearch = (query: string) => {
     setSearchQuery(query);
@@ -1124,6 +1152,7 @@ export default function PixelTextEditor() {
             <dl className="shortcut-list">
               <div><dt>화면 이동</dt><dd><kbd>Space</kbd> + 끌기</dd></div>
               <div><dt>확대 · 축소</dt><dd><kbd>Ctrl</kbd> + 휠</dd></div>
+              <div><dt>미니맵 확대 · 축소</dt><dd>미니맵 위 <kbd>Ctrl</kbd> + 휠</dd></div>
               <div><dt>사각형 선택</dt><dd>캔버스 끌기</dd></div>
               <div><dt>선택 이동</dt><dd>선택 영역 끌기</dd></div>
               <div><dt>실행 취소</dt><dd><kbd>Ctrl</kbd> + <kbd>Z</kbd></dd></div>
@@ -1139,11 +1168,13 @@ export default function PixelTextEditor() {
         </div>
 
         <div className="minimap-shell">
-          <span className="minimap-label">MAP</span>
+          <span className="minimap-label">
+            MAP {minimapZoom > MIN_MINIMAP_ZOOM && `${Math.round(minimapZoom * 100)}%`}
+          </span>
           <canvas
             ref={minimapRef}
             className="minimap"
-            aria-label="미니맵. 클릭하거나 끌어 이동합니다."
+            aria-label={`미니맵. 클릭하거나 끌어 이동합니다. Ctrl과 휠로 확대하거나 축소합니다. 현재 ${Math.round(minimapZoom * 100)}%, 최대 ${MAX_MINIMAP_ZOOM * 100}%`}
             onPointerDown={(event) => {
               minimapDraggingRef.current = true;
               event.currentTarget.setPointerCapture(event.pointerId);
