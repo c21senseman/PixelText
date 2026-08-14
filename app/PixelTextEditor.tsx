@@ -13,6 +13,7 @@ import {
   useState,
 } from "react";
 import { EditorModel } from "@/lib/editor";
+import { SparseDocument } from "@/lib/document";
 import { segmentGraphemes } from "@/lib/graphemes";
 import { exportJson, exportTxt, importJson } from "@/lib/io";
 import {
@@ -758,6 +759,29 @@ export default function PixelTextEditor() {
     focusInput();
   };
 
+  const handleNewDocument = () => {
+    finishCompositionBeforeCommand();
+    const hasDocumentData =
+      editor.document.cellCount > 0 || editor.bookmarks.length > 0;
+    if (
+      hasDocumentData &&
+      !window.confirm(
+        "현재 문서의 내용과 책갈피를 지우고 새 문서를 만드시겠습니까?",
+      )
+    ) {
+      focusInput();
+      return;
+    }
+
+    runAction(() => editor.replaceDocument(new SparseDocument(), []));
+    setCamera({ ...DEFAULT_CAMERA });
+    setSearchQuery("");
+    setMinimapZoom(MIN_MINIMAP_ZOOM);
+    setExportOpen(false);
+    setNotice("새 문서를 만들었습니다.");
+    focusInput();
+  };
+
   const handleImport = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -1107,7 +1131,16 @@ export default function PixelTextEditor() {
         )}
 
         {exportOpen && (
-          <div className="floating-panel file-panel">
+          <div className="floating-panel file-panel" aria-label="파일 메뉴">
+            <button
+              type="button"
+              className="file-action"
+              onClick={handleNewDocument}
+            >
+              <span>새로 만들기</span>
+              <small>빈 캔버스에서 새 문서 시작</small>
+            </button>
+            <div className="panel-rule" />
             <p className="panel-section-label">가져오기</p>
             <button
               type="button"
