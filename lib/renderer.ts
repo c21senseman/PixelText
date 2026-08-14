@@ -8,9 +8,11 @@ import {
   Selection,
 } from "./types";
 
-export const BASE_CELL_WIDTH = 16;
+export const BASE_CELL_WIDTH = 20;
 export const BASE_CELL_HEIGHT = 24;
-const BASE_FONT_SIZE = 15;
+const BASE_FONT_SIZE = 19;
+const CANVAS_FONT_FAMILY =
+  '"SFMono-Regular", "Cascadia Code", Consolas, "D2Coding", "Nanum Gothic Coding", "Noto Sans Mono CJK KR", monospace';
 
 export type Viewport = {
   width: number;
@@ -76,7 +78,7 @@ export function viewportCellBounds(camera: Camera, viewport: Viewport): Selectio
   };
 }
 
-export function resizeCanvas(canvas: HTMLCanvasElement): {
+export function resizeCanvas(canvas: HTMLCanvasElement, maxDpr = 2.5): {
   context: CanvasRenderingContext2D;
   viewport: Viewport;
   dpr: number;
@@ -84,7 +86,7 @@ export function resizeCanvas(canvas: HTMLCanvasElement): {
   const context = canvas.getContext("2d");
   if (!context) return null;
   const rect = canvas.getBoundingClientRect();
-  const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+  const dpr = Math.min(window.devicePixelRatio || 1, maxDpr);
   const width = Math.max(1, Math.round(rect.width * dpr));
   const height = Math.max(1, Math.round(rect.height * dpr));
   if (canvas.width !== width || canvas.height !== height) {
@@ -113,7 +115,7 @@ export function drawEditorCanvas(
   context.fillStyle = "#f7f7f4";
   context.fillRect(0, 0, viewport.width, viewport.height);
 
-  context.font = `${Math.max(4, BASE_FONT_SIZE * options.camera.zoom)}px var(--font-geist-mono), ui-monospace, SFMono-Regular, Consolas, monospace`;
+  context.font = `${Math.max(4, BASE_FONT_SIZE * options.camera.zoom)}px ${CANVAS_FONT_FAMILY}`;
   context.textAlign = "center";
   context.textBaseline = "middle";
   context.fillStyle = "#252521";
@@ -133,7 +135,7 @@ export function drawEditorCanvas(
         value,
         screen.x + metrics.width / 2,
         screen.y + metrics.height * 0.53,
-        metrics.width * 0.94,
+        metrics.width * 0.96,
       );
       context.restore();
     },
@@ -192,7 +194,7 @@ export function drawEditorCanvas(
 
   if (options.composition) {
     const graphemes = segmentGraphemes(options.composition);
-    context.font = `${Math.max(4, BASE_FONT_SIZE * options.camera.zoom)}px var(--font-geist-mono), ui-monospace, monospace`;
+    context.font = `${Math.max(4, BASE_FONT_SIZE * options.camera.zoom)}px ${CANVAS_FONT_FAMILY}`;
     context.textAlign = "center";
     context.textBaseline = "middle";
     for (let index = 0; index < graphemes.length; index += 1) {
@@ -209,7 +211,7 @@ export function drawEditorCanvas(
         graphemes[index],
         screen.x + metrics.width / 2,
         screen.y + metrics.height * 0.53,
-        metrics.width * 0.94,
+        metrics.width * 0.96,
       );
       context.restore();
       context.strokeStyle = "#5261e6";
@@ -293,9 +295,9 @@ export function drawMinimap(
   camera: Camera,
   editorViewport: Viewport,
 ): MinimapTransform | null {
-  const resized = resizeCanvas(canvas);
+  const resized = resizeCanvas(canvas, 4);
   if (!resized) return null;
-  const { context, viewport } = resized;
+  const { context, viewport, dpr } = resized;
   context.clearRect(0, 0, viewport.width, viewport.height);
 
   const viewBounds = viewportCellBounds(camera, editorViewport);
@@ -321,15 +323,33 @@ export function drawMinimap(
   const offsetX = padding + (availableWidth - worldWidth * scale) / 2;
   const offsetY = padding + (availableHeight - worldHeight * scale) / 2;
 
-  context.fillStyle = "rgba(38, 39, 35, 0.05)";
+  const devicePixel = 1 / dpr;
   for (const key of chunkKeys) {
     const coordinates = parseChunkKey(key);
-    const density = (document.getChunk(key)?.size ?? 0) / (CHUNK_SIZE * CHUNK_SIZE);
-    const x = offsetX + (coordinates.x * CHUNK_SIZE - worldMinX) * scale;
-    const y = offsetY + (coordinates.y * CHUNK_SIZE - worldMinY) * scale;
-    const size = Math.max(1.5, CHUNK_SIZE * scale);
-    context.fillStyle = `rgba(66, 72, 68, ${Math.min(0.82, 0.18 + Math.sqrt(density) * 1.5)})`;
-    context.fillRect(x, y, size, size);
+    const chunk = document.getChunk(key);
+    if (!chunk) continue;
+    const chunkX = offsetX + (coordinates.x * CHUNK_SIZE - worldMinX) * scale;
+    const chunkY = offsetY + (coordinates.y * CHUNK_SIZE - worldMinY) * scale;
+    const chunkScreenSize = CHUNK_SIZE * scale;
+
+    if (chunkScreenSize >= 4) {
+      const cellSize = Math.max(devicePixel, scale);
+      context.fillStyle = scale >= 1 ? "rgba(48, 51, 47, 0.88)" : "rgba(48, 51, 47, 0.72)";
+      for (const index of chunk.keys()) {
+        const lx = index % CHUNK_SIZE;
+        const ly = Math.floor(index / CHUNK_SIZE);
+        const x = Math.round((chunkX + lx * scale) * dpr) / dpr;
+        const y = Math.round((chunkY + ly * scale) * dpr) / dpr;
+        context.fillRect(x, y, cellSize, cellSize);
+      }
+    } else {
+      const density = chunk.size / (CHUNK_SIZE * CHUNK_SIZE);
+      const x = Math.round(chunkX * dpr) / dpr;
+      const y = Math.round(chunkY * dpr) / dpr;
+      const size = Math.max(devicePixel, chunkScreenSize);
+      context.fillStyle = `rgba(48, 51, 47, ${Math.min(0.9, 0.5 + Math.sqrt(density) * 1.2)})`;
+      context.fillRect(x, y, size, size);
+    }
   }
 
   const cameraX = offsetX + (viewBounds.x1 - worldMinX) * scale;
@@ -355,4 +375,3 @@ export function minimapToWorld(
     y: transform.worldMinY + (y - transform.offsetY) / transform.scale,
   };
 }
-

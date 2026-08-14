@@ -7,7 +7,6 @@ import {
   FormEvent,
   KeyboardEvent,
   PointerEvent,
-  WheelEvent,
   useCallback,
   useEffect,
   useRef,
@@ -669,10 +668,13 @@ export default function PixelTextEditor() {
     focusInput();
   };
 
-  const handleWheel = (event: WheelEvent<HTMLCanvasElement>) => {
-    if (!event.ctrlKey) return;
+  const handleWheel = useCallback((event: globalThis.WheelEvent) => {
+    if (!event.ctrlKey && !event.metaKey) return;
     event.preventDefault();
-    const rect = event.currentTarget.getBoundingClientRect();
+    event.stopPropagation();
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
     const current = cameraRef.current;
     const oldMetrics = cellMetrics(current);
     const mouseX = event.clientX - rect.left;
@@ -689,7 +691,19 @@ export default function PixelTextEditor() {
       y: logicalY - (mouseY - rect.height / 2) / nextMetrics.height,
       zoom,
     });
-  };
+  }, [setCamera]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    canvas.addEventListener("wheel", handleWheel, {
+      passive: false,
+      capture: true,
+    });
+    return () => {
+      canvas.removeEventListener("wheel", handleWheel, { capture: true });
+    };
+  }, [handleWheel]);
 
   const updateSearch = (query: string) => {
     setSearchQuery(query);
@@ -902,7 +916,6 @@ export default function PixelTextEditor() {
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
           onPointerCancel={handlePointerUp}
-          onWheel={handleWheel}
           onContextMenu={(event) => event.preventDefault()}
         />
         <p id="canvas-instructions" className="sr-only">

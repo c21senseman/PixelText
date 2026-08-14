@@ -187,6 +187,7 @@ input:focus-visible {
   overflow: hidden;
   background: var(--paper);
   isolation: isolate;
+  overscroll-behavior: none;
 }
 
 .editor-canvas {
@@ -593,7 +594,7 @@ kbd {
 .zoom-control {
   position: absolute;
   right: 18px;
-  bottom: 154px;
+  bottom: 186px;
   z-index: 10;
   display: flex;
   align-items: center;
@@ -633,8 +634,8 @@ kbd {
   right: 18px;
   bottom: 16px;
   z-index: 9;
-  width: 190px;
-  height: 128px;
+  width: 240px;
+  height: 160px;
   overflow: hidden;
   border: 1px solid rgba(209, 209, 203, 0.9);
   border-radius: 10px;
@@ -835,13 +836,13 @@ kbd {
   .minimap-shell {
     right: 12px;
     bottom: 12px;
-    width: 140px;
-    height: 96px;
+    width: 170px;
+    height: 112px;
   }
 
   .zoom-control {
     right: 12px;
-    bottom: 117px;
+    bottom: 133px;
   }
 
   .bookmark-panel,

@@ -109,6 +109,20 @@ test("selection deletion and undo restore cells, cursor, and selection", () => {
   assert.equal(editor.document.getCell(1, 0), null);
 });
 
+test("arrow keys collapse a rectangular selection to the requested edge", () => {
+  const editor = new EditorModel();
+  editor.setCursor({ x: 4, y: 3 });
+  editor.setSelection({ x1: 2, y1: 1, x2: 5, y2: 4 });
+  editor.moveCursor(1, 0);
+  assert.deepEqual(editor.cursor, { x: 5, y: 3 });
+  assert.equal(editor.selection, null);
+
+  editor.setSelection({ x1: 2, y1: 1, x2: 5, y2: 4 });
+  editor.moveCursor(0, -1);
+  assert.deepEqual(editor.cursor, { x: 5, y: 1 });
+  assert.equal(editor.selection, null);
+});
+
 test("moving an overlapping rectangular selection uses a snapshot", () => {
   const editor = new EditorModel();
   editor.insertText("ABC");
@@ -152,4 +166,3 @@ test("JSON export is deterministic and import validates atomically", () => {
   parsed.chunks[0].cells.push(parsed.chunks[0].cells[0]);
   assert.throws(() => importJson(JSON.stringify(parsed)), /중복/);
 });
-
