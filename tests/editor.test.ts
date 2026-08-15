@@ -513,7 +513,7 @@ test("selection movement leaves non-target path blocks in place", () => {
   assert.equal(editor.document.getCell(7, 0), "T");
 });
 
-test("selection pushing follows the nearest cardinal relative direction", () => {
+test("selection pushing follows the nearest cardinal exit direction", () => {
   const left = new EditorModel();
   left.document.setCell(5, 0, "S");
   left.insertText("ABC");
@@ -524,16 +524,16 @@ test("selection pushing follows the nearest cardinal relative direction", () => 
   assert.equal(left.document.getCell(0, 0), "B");
   assert.equal(left.document.getCell(1, 0), "C");
 
-  const vertical = new EditorModel();
-  vertical.document.setCell(1, 0, "S");
+  const alignedTie = new EditorModel();
+  alignedTie.document.setCell(1, 0, "S");
   for (const [y, value] of [..."ABC"].entries()) {
-    vertical.document.setCell(1, y + 3, value);
+    alignedTie.document.setCell(1, y + 3, value);
   }
-  vertical.setSelection({ x1: 1, y1: 0, x2: 2, y2: 1 });
-  vertical.moveSelection(0, 3);
-  assert.equal(vertical.document.getCell(1, 3), "S");
+  alignedTie.setSelection({ x1: 1, y1: 0, x2: 2, y2: 1 });
+  alignedTie.moveSelection(0, 3);
+  assert.equal(alignedTie.document.getCell(1, 3), "S");
   for (const [y, value] of [..."ABC"].entries()) {
-    assert.equal(vertical.document.getCell(1, y + 4), value);
+    assert.equal(alignedTie.document.getCell(2, y + 3), value);
   }
 
   const horizontalTie = new EditorModel();
@@ -582,17 +582,21 @@ test("pushed target sentences move colliding blocks in a chain", () => {
   for (const [offset, value] of [..."ABCD"].entries()) {
     editor.document.setCell(offset + 5, 0, value);
   }
-  editor.document.setCell(11, 0, "T");
-  editor.setSelection({ x1: 0, y1: 0, x2: 2, y2: 1 });
+  editor.document.setCell(8, 1, "E");
+  editor.document.setCell(8, 2, "F");
+  editor.document.setCell(8, 4, "T");
+  editor.setSelection({ x1: 0, y1: 0, x2: 4, y2: 2 });
 
   editor.moveSelection(5, 0);
 
   assert.equal(editor.document.getCell(5, 0), "X");
   assert.equal(editor.document.getCell(6, 0), "Y");
   for (const [offset, value] of [..."ABCD"].entries()) {
-    assert.equal(editor.document.getCell(offset + 7, 0), value);
+    assert.equal(editor.document.getCell(offset + 5, 2), value);
   }
-  assert.equal(editor.document.getCell(12, 0), "T");
+  assert.equal(editor.document.getCell(8, 3), "E");
+  assert.equal(editor.document.getCell(8, 4), "F");
+  assert.equal(editor.document.getCell(8, 5), "T");
 });
 
 test("an empty target uses simple movement even when the path has text", () => {
