@@ -787,6 +787,7 @@ export class EditorModel {
 
   private textBlockPushDirection(
     target: Selection,
+    targetTextBounds: Selection,
     block: ReadonlyMap<string, { x: number; y: number; value: string }>,
   ): Position {
     let minX = Number.MAX_SAFE_INTEGER;
@@ -800,8 +801,10 @@ export class EditorModel {
       maxY = Math.max(maxY, cell.y);
     }
 
-    const targetCenterX = BigInt(target.x1) + BigInt(target.x2) - 1n;
-    const targetCenterY = BigInt(target.y1) + BigInt(target.y2) - 1n;
+    const targetCenterX =
+      BigInt(targetTextBounds.x1) + BigInt(targetTextBounds.x2) - 1n;
+    const targetCenterY =
+      BigInt(targetTextBounds.y1) + BigInt(targetTextBounds.y2) - 1n;
     const blockCenterX = BigInt(minX) + BigInt(maxX);
     const blockCenterY = BigInt(minY) + BigInt(maxY);
     const candidates: Array<{ distance: bigint; step: Position }> = [];
@@ -898,13 +901,23 @@ export class EditorModel {
 
     while (true) {
       let overlap: Position | null = null;
-      for (let y = target.y1; y < target.y2 && !overlap; y += 1) {
+      let targetTextBounds: Selection | null = null;
+      for (let y = target.y1; y < target.y2; y += 1) {
         for (let x = target.x1; x < target.x2; x += 1) {
           if (transaction.get(x, y) !== null) {
-            overlap = { x, y };
-            break;
+            overlap ??= { x, y };
+            if (pushDirection) break;
+            if (!targetTextBounds) {
+              targetTextBounds = { x1: x, y1: y, x2: x + 1, y2: y + 1 };
+            } else {
+              targetTextBounds.x1 = Math.min(targetTextBounds.x1, x);
+              targetTextBounds.y1 = Math.min(targetTextBounds.y1, y);
+              targetTextBounds.x2 = Math.max(targetTextBounds.x2, x + 1);
+              targetTextBounds.y2 = Math.max(targetTextBounds.y2, y + 1);
+            }
           }
         }
+        if (pushDirection && overlap) break;
       }
       if (!overlap) return;
       const block = this.collectTextBlock(
@@ -912,7 +925,11 @@ export class EditorModel {
         overlap,
         clearedSource,
       );
-      const step = pushDirection ?? this.textBlockPushDirection(target, block);
+      const step = pushDirection ?? this.textBlockPushDirection(
+        target,
+        targetTextBounds!,
+        block,
+      );
       this.pushTextBlockOutOfTarget(
         transaction,
         overlap,

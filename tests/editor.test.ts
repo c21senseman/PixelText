@@ -562,6 +562,22 @@ test("selection pushing follows the target-to-block center direction", () => {
   assert.equal(verticalNearest.document.getCell(5, 4), "F");
 });
 
+test("selection pushing centers the target on its existing text only", () => {
+  const editor = new EditorModel();
+  editor.document.setCell(0, 2, "S");
+  editor.document.setCell(0, 0, "A");
+  editor.document.setCell(1, 0, "B");
+  editor.document.setCell(2, 0, "C");
+  editor.setSelection({ x1: 0, y1: 2, x2: 5, y2: 3 });
+
+  editor.moveSelection(0, -2);
+
+  assert.equal(editor.document.getCell(0, 0), "S");
+  assert.equal(editor.document.getCell(0, 1), "A");
+  assert.equal(editor.document.getCell(1, 1), "B");
+  assert.equal(editor.document.getCell(2, 1), "C");
+});
+
 test("keyboard selection movement pushes only in the pressed direction", () => {
   const editor = new EditorModel();
   editor.document.setCell(0, 0, "S");
