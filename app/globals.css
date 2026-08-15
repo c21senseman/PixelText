@@ -358,7 +358,6 @@ kbd {
   min-width: 0;
   width: 100%;
   border: 0;
-  outline: 0;
   background: transparent;
   color: var(--ink);
   font-size: 13px;
@@ -437,7 +436,6 @@ kbd {
   padding: 0 10px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  outline: 0;
   background: #fafaf8;
   font-size: 12px;
 }

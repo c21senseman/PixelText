@@ -288,10 +288,10 @@ export default function PixelTextEditor() {
   );
 
   useEffect(() => {
-    const unsubscribe = editor.subscribe(() => {
+    const unsubscribe = editor.subscribe((change) => {
       setRevision((value) => value + 1);
       requestRender();
-      scheduleSave();
+      if (change !== "transient") scheduleSave();
     });
     let active = true;
     void storage
@@ -457,36 +457,6 @@ export default function PixelTextEditor() {
   );
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    const commandKey = event.ctrlKey || event.metaKey;
-    if (commandKey && event.key.toLowerCase() === "z") {
-      event.preventDefault();
-      finishCompositionBeforeCommand();
-      runAction(() => (event.shiftKey ? editor.redo() : editor.undo()));
-      focusInput();
-      return;
-    }
-    if (commandKey && event.key.toLowerCase() === "f") {
-      event.preventDefault();
-      finishCompositionBeforeCommand();
-      setSearchOpen(true);
-      setBookmarksOpen(false);
-      setExportOpen(false);
-      return;
-    }
-    if (event.key === "Escape") {
-      event.preventDefault();
-      if (composingRef.current) cancelComposition();
-      else {
-        editor.setSelection(null);
-        setSearchOpen(false);
-        setBookmarksOpen(false);
-        setExportOpen(false);
-        setHelpOpen(false);
-        focusInput();
-      }
-      return;
-    }
-
     const cursorCommands: Record<string, [number, number]> = {
       ArrowLeft: [-1, 0],
       ArrowRight: [1, 0],
@@ -522,6 +492,53 @@ export default function PixelTextEditor() {
       focusInput();
     }
   };
+
+  useEffect(() => {
+    const handleGlobalKeyDown = (event: globalThis.KeyboardEvent) => {
+      const commandKey = event.ctrlKey || event.metaKey;
+      const key = event.key.toLowerCase();
+      if (commandKey && key === "z") {
+        event.preventDefault();
+        event.stopPropagation();
+        finishCompositionBeforeCommand();
+        runAction(() => (event.shiftKey ? editor.redo() : editor.undo()));
+        focusInput();
+        return;
+      }
+      if (commandKey && key === "f") {
+        event.preventDefault();
+        event.stopPropagation();
+        finishCompositionBeforeCommand();
+        setSearchOpen(true);
+        setBookmarksOpen(false);
+        setExportOpen(false);
+        setHelpOpen(false);
+        return;
+      }
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (composingRef.current) {
+        cancelComposition();
+        return;
+      }
+      editor.setSelection(null);
+      setSearchOpen(false);
+      setBookmarksOpen(false);
+      setExportOpen(false);
+      setHelpOpen(false);
+      focusInput();
+    };
+
+    window.addEventListener("keydown", handleGlobalKeyDown, true);
+    return () => window.removeEventListener("keydown", handleGlobalKeyDown, true);
+  }, [
+    cancelComposition,
+    editor,
+    finishCompositionBeforeCommand,
+    focusInput,
+    runAction,
+  ]);
 
   const handleBeforeInput = (event: FormEvent<HTMLTextAreaElement>) => {
     const inputEvent = event.nativeEvent as InputEvent;
@@ -1166,6 +1183,9 @@ export default function PixelTextEditor() {
           <button
             className={`text-button ${searchOpen ? "is-active" : ""}`}
             type="button"
+            aria-label="찾기"
+            aria-expanded={searchOpen}
+            aria-controls="search-panel"
             onClick={() => {
               setSearchOpen((value) => !value);
               setBookmarksOpen(false);
@@ -1179,6 +1199,9 @@ export default function PixelTextEditor() {
           <button
             className={`text-button ${bookmarksOpen ? "is-active" : ""}`}
             type="button"
+            aria-label="책갈피"
+            aria-expanded={bookmarksOpen}
+            aria-controls="bookmarks-panel"
             onClick={() => {
               setBookmarksOpen((value) => !value);
               setSearchOpen(false);
@@ -1193,6 +1216,9 @@ export default function PixelTextEditor() {
           <button
             className={`text-button ${exportOpen ? "is-active" : ""}`}
             type="button"
+            aria-label="파일"
+            aria-expanded={exportOpen}
+            aria-controls="file-panel"
             onClick={() => {
               setExportOpen((value) => !value);
               setSearchOpen(false);
@@ -1207,6 +1233,8 @@ export default function PixelTextEditor() {
             className={`icon-button help-button ${helpOpen ? "is-active" : ""}`}
             type="button"
             aria-label="도움말"
+            aria-expanded={helpOpen}
+            aria-controls="help-panel"
             onClick={() => {
               setHelpOpen((value) => !value);
               setSearchOpen(false);
@@ -1278,21 +1306,19 @@ export default function PixelTextEditor() {
         )}
 
         {searchOpen && (
-          <div className="floating-panel search-panel">
+          <div id="search-panel" className="floating-panel search-panel">
             <label className="search-field">
               <span aria-hidden="true">⌕</span>
               <input
                 ref={searchInputRef}
                 value={searchQuery}
+                aria-label="전체 캔버스에서 찾기"
                 placeholder="전체 캔버스에서 찾기"
                 onChange={(event) => updateSearch(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") {
                     event.preventDefault();
                     navigateSearch(event.shiftKey ? -1 : 1);
-                  } else if (event.key === "Escape") {
-                    setSearchOpen(false);
-                    focusInput();
                   }
                 }}
               />
@@ -1335,7 +1361,11 @@ export default function PixelTextEditor() {
         )}
 
         {bookmarksOpen && (
-          <aside className="floating-panel bookmark-panel" aria-label="책갈피">
+          <aside
+            id="bookmarks-panel"
+            className="floating-panel bookmark-panel"
+            aria-label="책갈피"
+          >
             <div className="panel-heading">
               <div>
                 <p className="eyebrow">BOOKMARKS</p>
@@ -1395,7 +1425,11 @@ export default function PixelTextEditor() {
         )}
 
         {exportOpen && (
-          <div className="floating-panel file-panel" aria-label="파일 메뉴">
+          <div
+            id="file-panel"
+            className="floating-panel file-panel"
+            aria-label="파일 메뉴"
+          >
             <button
               type="button"
               className="file-action"
@@ -1428,7 +1462,7 @@ export default function PixelTextEditor() {
         )}
 
         {helpOpen && (
-          <div className="floating-panel help-panel">
+          <div id="help-panel" className="floating-panel help-panel">
             <div className="panel-heading compact-heading">
               <div>
                 <p className="eyebrow">QUICK GUIDE</p>

@@ -79,7 +79,8 @@ class Transaction {
   }
 }
 
-export type EditorListener = () => void;
+export type EditorChangeKind = "transient" | "document" | "bookmarks";
+export type EditorListener = (change: EditorChangeKind) => void;
 export type SelectionResizeEdge = "left" | "right" | "top" | "bottom";
 
 export class EditorModel {
@@ -103,8 +104,8 @@ export class EditorModel {
     return () => this.listeners.delete(listener);
   }
 
-  private emit(): void {
-    for (const listener of this.listeners) listener();
+  private emit(change: EditorChangeKind = "transient"): void {
+    for (const listener of this.listeners) listener(change);
   }
 
   get canUndo(): boolean {
@@ -221,7 +222,7 @@ export class EditorModel {
       this.searchResults = [];
       this.searchIndex = -1;
     }
-    this.emit();
+    this.emit(changes.length > 0 ? "document" : "transient");
   }
 
   private insertOne(
@@ -954,7 +955,7 @@ export class EditorModel {
       y: this.cursor.y,
     };
     this.bookmarks = [...this.bookmarks, bookmark];
-    this.emit();
+    this.emit("bookmarks");
     return bookmark;
   }
 
@@ -962,7 +963,7 @@ export class EditorModel {
     const next = this.bookmarks.filter((bookmark) => bookmark.id !== id);
     if (next.length === this.bookmarks.length) return;
     this.bookmarks = next;
-    this.emit();
+    this.emit("bookmarks");
   }
 
   undo(): void {
@@ -976,7 +977,7 @@ export class EditorModel {
     this.redoStack.push(batch);
     this.searchResults = [];
     this.searchIndex = -1;
-    this.emit();
+    this.emit("document");
   }
 
   redo(): void {
@@ -990,7 +991,7 @@ export class EditorModel {
     this.undoStack.push(batch);
     this.searchResults = [];
     this.searchIndex = -1;
-    this.emit();
+    this.emit("document");
   }
 
   replaceDocument(
@@ -1008,7 +1009,7 @@ export class EditorModel {
     this.redoStack = [];
     this.searchResults = [];
     this.searchIndex = -1;
-    this.emit();
+    this.emit("document");
   }
 
   loadState(

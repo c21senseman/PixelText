@@ -401,10 +401,10 @@ export function drawMinimap(
       64,
       Math.max(4, Math.ceil(Math.max(contentWidth, contentHeight) * 0.06)),
     );
-    baseMinX = contentBounds.minX - margin;
-    baseMinY = contentBounds.minY - margin;
-    baseMaxX = contentBounds.maxX + margin;
-    baseMaxY = contentBounds.maxY + margin;
+    baseMinX = Math.min(viewBounds.x1, contentBounds.minX - margin);
+    baseMinY = Math.min(viewBounds.y1, contentBounds.minY - margin);
+    baseMaxX = Math.max(viewBounds.x2, contentBounds.maxX + margin);
+    baseMaxY = Math.max(viewBounds.y2, contentBounds.maxY + margin);
   }
 
   const chunkKeys = document.chunkKeys();

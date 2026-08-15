@@ -606,3 +606,21 @@ test("legacy JSON space cells load as empty cells", () => {
     /\[\s*1,\s*" "\s*\]/u,
   );
 });
+
+test("editor change events distinguish persistent and transient state", () => {
+  const editor = new EditorModel();
+  const events: string[] = [];
+  editor.subscribe((change) => events.push(change));
+
+  editor.moveCursor(1, 0);
+  editor.setSelection({ x1: 0, y1: 0, x2: 1, y2: 1 });
+  editor.setSelection(null);
+  editor.search("A");
+  assert.deepEqual(events, ["transient", "transient", "transient", "transient"]);
+
+  events.length = 0;
+  editor.insertText("A");
+  editor.addBookmark("시작");
+  editor.undo();
+  assert.deepEqual(events, ["document", "bookmarks", "document"]);
+});
