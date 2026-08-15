@@ -1,6 +1,7 @@
 import { parseChunkKey, SparseDocument } from "./document";
 import { segmentGraphemes } from "./graphemes";
 import {
+  Bookmark,
   Camera,
   CHUNK_SIZE,
   Position,
@@ -26,6 +27,7 @@ export type SelectionPreview = {
 
 export type DrawEditorOptions = {
   document: SparseDocument;
+  bookmarks: Bookmark[];
   camera: Camera;
   cursor: Position;
   overwriteMode: boolean;
@@ -278,6 +280,154 @@ export function drawEditorCanvas(
       );
     }
   }
+
+  drawBookmarks(
+    context,
+    options.bookmarks,
+    options.camera,
+    viewport,
+    visible,
+  );
+}
+
+function fitBookmarkName(
+  context: CanvasRenderingContext2D,
+  name: string,
+  maxWidth: number,
+): string {
+  if (context.measureText(name).width <= maxWidth) return name;
+  const graphemes = segmentGraphemes(name);
+  const ellipsis = "…";
+  let low = 0;
+  let high = graphemes.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    const candidate = `${graphemes.slice(0, middle).join("")}${ellipsis}`;
+    if (context.measureText(candidate).width <= maxWidth) low = middle;
+    else high = middle - 1;
+  }
+  return `${graphemes.slice(0, low).join("")}${ellipsis}`;
+}
+
+function roundedRectPath(
+  context: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radius: number,
+): void {
+  const right = x + width;
+  const bottom = y + height;
+  context.beginPath();
+  context.moveTo(x + radius, y);
+  context.lineTo(right - radius, y);
+  context.quadraticCurveTo(right, y, right, y + radius);
+  context.lineTo(right, bottom - radius);
+  context.quadraticCurveTo(right, bottom, right - radius, bottom);
+  context.lineTo(x + radius, bottom);
+  context.quadraticCurveTo(x, bottom, x, bottom - radius);
+  context.lineTo(x, y + radius);
+  context.quadraticCurveTo(x, y, x + radius, y);
+  context.closePath();
+}
+
+function drawBookmarks(
+  context: CanvasRenderingContext2D,
+  bookmarks: Bookmark[],
+  camera: Camera,
+  viewport: Viewport,
+  visible: Selection,
+): void {
+  const labelHeight = 22;
+  const labelGap = 8;
+  const labelPadding = 8;
+  const maxLabelWidth = Math.min(220, Math.max(24, viewport.width - 12));
+
+  context.save();
+  context.font = `600 12px ${CANVAS_FONT_FAMILY}`;
+  context.textAlign = "left";
+  context.textBaseline = "middle";
+
+  for (const bookmark of bookmarks) {
+    if (
+      bookmark.x < visible.x1 ||
+      bookmark.x > visible.x2 ||
+      bookmark.y < visible.y1 ||
+      bookmark.y > visible.y2
+    ) {
+      continue;
+    }
+
+    const anchor = logicalToScreen(bookmark, camera, viewport);
+    const displayName = fitBookmarkName(
+      context,
+      bookmark.name,
+      maxLabelWidth - labelPadding * 2,
+    );
+    const labelWidth = Math.min(
+      maxLabelWidth,
+      Math.max(24, context.measureText(displayName).width + labelPadding * 2),
+    );
+    let labelX = anchor.x + labelGap;
+    if (labelX + labelWidth > viewport.width - 6) {
+      labelX = anchor.x - labelGap - labelWidth;
+    }
+    labelX = Math.min(
+      Math.max(6, labelX),
+      Math.max(6, viewport.width - labelWidth - 6),
+    );
+    let labelY = anchor.y - labelHeight - 7;
+    if (labelY < 6) labelY = anchor.y + 7;
+    labelY = Math.min(
+      Math.max(6, labelY),
+      Math.max(6, viewport.height - labelHeight - 6),
+    );
+
+    context.strokeStyle = "rgba(82, 97, 230, 0.72)";
+    context.lineWidth = 1.25;
+    context.beginPath();
+    context.moveTo(anchor.x, anchor.y);
+    context.lineTo(
+      Math.min(Math.max(anchor.x, labelX), labelX + labelWidth),
+      labelY < anchor.y ? labelY + labelHeight : labelY,
+    );
+    context.stroke();
+
+    context.fillStyle = "rgba(82, 97, 230, 0.98)";
+    context.beginPath();
+    context.moveTo(anchor.x, anchor.y - 5);
+    context.lineTo(anchor.x + 5, anchor.y);
+    context.lineTo(anchor.x, anchor.y + 5);
+    context.lineTo(anchor.x - 5, anchor.y);
+    context.closePath();
+    context.fill();
+    context.strokeStyle = "rgba(255, 255, 255, 0.96)";
+    context.lineWidth = 1.5;
+    context.stroke();
+
+    roundedRectPath(
+      context,
+      labelX,
+      labelY,
+      labelWidth,
+      labelHeight,
+      5,
+    );
+    context.fillStyle = "rgba(255, 255, 255, 0.96)";
+    context.fill();
+    context.strokeStyle = "rgba(82, 97, 230, 0.56)";
+    context.lineWidth = 1;
+    context.stroke();
+    context.fillStyle = "#414fc9";
+    context.fillText(
+      displayName,
+      labelX + labelPadding,
+      labelY + labelHeight / 2 + 0.5,
+    );
+  }
+
+  context.restore();
 }
 
 function drawSelection(

@@ -3,7 +3,7 @@ import test from "node:test";
 import { chunkAddress, SparseDocument } from "../lib/document";
 import { EditorModel } from "../lib/editor";
 import { exportJson, importJson } from "../lib/io";
-import { shouldDrawCursor } from "../lib/renderer";
+import { drawEditorCanvas, shouldDrawCursor } from "../lib/renderer";
 import {
   MIN_ZOOM,
   selectionAutoPanVelocity,
@@ -28,6 +28,64 @@ test("an active selection hides the cursor in both input modes", () => {
   assert.equal(shouldDrawCursor({ selection: null, overwriteMode: false }), true);
   assert.equal(shouldDrawCursor({ selection, overwriteMode: false }), false);
   assert.equal(shouldDrawCursor({ selection, overwriteMode: true }), false);
+});
+
+test("the canvas renders a visible bookmark marker and name", () => {
+  const drawnText: string[] = [];
+  const context = {
+    beginPath() {},
+    clearRect() {},
+    closePath() {},
+    fill() {},
+    fillRect() {},
+    fillText(value: string) {
+      drawnText.push(value);
+    },
+    lineTo() {},
+    measureText(value: string) {
+      return { width: value.length * 8 };
+    },
+    moveTo() {},
+    quadraticCurveTo() {},
+    restore() {},
+    save() {},
+    setTransform() {},
+    stroke() {},
+  } as unknown as CanvasRenderingContext2D;
+  const canvas = {
+    width: 0,
+    height: 0,
+    getContext: () => context,
+    getBoundingClientRect: () => ({ width: 400, height: 300 }),
+  } as unknown as HTMLCanvasElement;
+  const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { devicePixelRatio: 1 },
+  });
+
+  try {
+    drawEditorCanvas(canvas, {
+      document: new SparseDocument(),
+      bookmarks: [{ id: "b1", name: "시작", x: 0, y: 0 }],
+      camera: { x: 0, y: 0, zoom: 1 },
+      cursor: { x: 1_000, y: 1_000 },
+      overwriteMode: false,
+      selection: null,
+      composition: "",
+      searchResults: [],
+      activeSearchIndex: -1,
+      searchLength: 0,
+    });
+  } finally {
+    if (windowDescriptor) {
+      Object.defineProperty(globalThis, "window", windowDescriptor);
+    } else {
+      Reflect.deleteProperty(globalThis, "window");
+    }
+  }
+
+  assert.deepEqual(drawnText, ["시작"]);
 });
 
 test("spaces are empty cells and only one-cell gaps between text are spaces", () => {

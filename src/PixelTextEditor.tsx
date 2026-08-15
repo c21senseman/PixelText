@@ -352,6 +352,7 @@ export default function PixelTextEditor() {
     const searchLength = segmentGraphemes(searchQuery).length;
     drawEditorCanvas(canvas, {
       document: editor.document,
+      bookmarks: editor.bookmarks,
       camera: cameraRef.current,
       cursor: editor.cursor,
       overwriteMode: editor.overwriteMode,
