@@ -38,6 +38,12 @@ export type DrawEditorOptions = {
   selectionResizePreview?: Selection | null;
 };
 
+export function shouldDrawCursor({
+  selection,
+}: Pick<DrawEditorOptions, "selection" | "overwriteMode">): boolean {
+  return selection === null;
+}
+
 export function cellMetrics(camera: Camera): { width: number; height: number } {
   return {
     width: BASE_CELL_WIDTH * camera.zoom,
@@ -175,6 +181,7 @@ export function drawEditorCanvas(
 
   const cursorScreen = logicalToScreen(options.cursor, options.camera, viewport);
   if (
+    shouldDrawCursor(options) &&
     options.cursor.x >= visible.x1 &&
     options.cursor.x <= visible.x2 &&
     options.cursor.y >= visible.y1 &&

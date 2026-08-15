@@ -3,6 +3,7 @@ import test from "node:test";
 import { chunkAddress, SparseDocument } from "../lib/document";
 import { EditorModel } from "../lib/editor";
 import { exportJson, importJson } from "../lib/io";
+import { shouldDrawCursor } from "../lib/renderer";
 import {
   MIN_ZOOM,
   selectionAutoPanVelocity,
@@ -20,6 +21,13 @@ test("negative coordinates use floor-based chunks", () => {
   });
   assert.equal(chunkAddress({ x: -64, y: 0 }).key, "-1,0");
   assert.equal(chunkAddress({ x: -65, y: 0 }).key, "-2,0");
+});
+
+test("an active selection hides the cursor in both input modes", () => {
+  const selection = { x1: 0, y1: 0, x2: 1, y2: 1 };
+  assert.equal(shouldDrawCursor({ selection: null, overwriteMode: false }), true);
+  assert.equal(shouldDrawCursor({ selection, overwriteMode: false }), false);
+  assert.equal(shouldDrawCursor({ selection, overwriteMode: true }), false);
 });
 
 test("spaces are empty cells and only one-cell gaps between text are spaces", () => {
