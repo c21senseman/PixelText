@@ -133,7 +133,10 @@ export class EditorModel {
 
   moveCursorOrSelection(dx: number, dy: number): void {
     if (this.selection) {
-      this.moveSelection(dx, dy);
+      const pushDirection = dx !== 0
+        ? { x: Math.sign(dx), y: 0 }
+        : { x: 0, y: Math.sign(dy) };
+      this.moveSelection(dx, dy, pushDirection);
       return;
     }
     this.moveCursor(dx, dy);
@@ -797,24 +800,53 @@ export class EditorModel {
       maxY = Math.max(maxY, cell.y);
     }
 
-    const candidates: Array<{ distance: bigint; step: Position }> = [
-      {
+    const targetCenterX = BigInt(target.x1) + BigInt(target.x2) - 1n;
+    const targetCenterY = BigInt(target.y1) + BigInt(target.y2) - 1n;
+    const blockCenterX = BigInt(minX) + BigInt(maxX);
+    const blockCenterY = BigInt(minY) + BigInt(maxY);
+    const candidates: Array<{ distance: bigint; step: Position }> = [];
+    if (blockCenterX > targetCenterX) {
+      candidates.push({
         distance: BigInt(target.x2) - BigInt(minX),
         step: { x: 1, y: 0 },
-      },
-      {
+      });
+    } else if (blockCenterX < targetCenterX) {
+      candidates.push({
         distance: BigInt(maxX) - BigInt(target.x1) + 1n,
         step: { x: -1, y: 0 },
-      },
-      {
+      });
+    }
+    if (blockCenterY > targetCenterY) {
+      candidates.push({
         distance: BigInt(target.y2) - BigInt(minY),
         step: { x: 0, y: 1 },
-      },
-      {
+      });
+    } else if (blockCenterY < targetCenterY) {
+      candidates.push({
         distance: BigInt(maxY) - BigInt(target.y1) + 1n,
         step: { x: 0, y: -1 },
-      },
-    ];
+      });
+    }
+    if (candidates.length === 0) {
+      candidates.push(
+        {
+          distance: BigInt(target.x2) - BigInt(minX),
+          step: { x: 1, y: 0 },
+        },
+        {
+          distance: BigInt(maxX) - BigInt(target.x1) + 1n,
+          step: { x: -1, y: 0 },
+        },
+        {
+          distance: BigInt(target.y2) - BigInt(minY),
+          step: { x: 0, y: 1 },
+        },
+        {
+          distance: BigInt(maxY) - BigInt(target.y1) + 1n,
+          step: { x: 0, y: -1 },
+        },
+      );
+    }
     return candidates.reduce((closest, candidate) =>
       candidate.distance < closest.distance ? candidate : closest,
     ).step;
@@ -851,6 +883,7 @@ export class EditorModel {
     transaction: Transaction,
     selection: Selection,
     target: Selection,
+    pushDirection?: Position,
   ): void {
     const width = safeAdd(selection.x2, -selection.x1);
     const height = safeAdd(selection.y2, -selection.y1);
@@ -879,7 +912,7 @@ export class EditorModel {
         overlap,
         clearedSource,
       );
-      const step = this.textBlockPushDirection(target, block);
+      const step = pushDirection ?? this.textBlockPushDirection(target, block);
       this.pushTextBlockOutOfTarget(
         transaction,
         overlap,
@@ -890,7 +923,7 @@ export class EditorModel {
     }
   }
 
-  moveSelection(dx: number, dy: number): void {
+  moveSelection(dx: number, dy: number, pushDirection?: Position): void {
     const selection = this.selection;
     if (!selection || (dx === 0 && dy === 0)) return;
     const target: Selection = {
@@ -934,7 +967,12 @@ export class EditorModel {
       (x, y) => transaction.set(x, y, null),
     );
     if (!this.overwriteMode && targetHasExistingText) {
-      this.pushTextOverlappingTarget(transaction, selection, target);
+      this.pushTextOverlappingTarget(
+        transaction,
+        selection,
+        target,
+        pushDirection,
+      );
     } else {
       this.document.forEachInRect(
         target.x1,

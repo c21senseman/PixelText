@@ -513,7 +513,7 @@ test("selection movement leaves non-target path blocks in place", () => {
   assert.equal(editor.document.getCell(7, 0), "T");
 });
 
-test("selection pushing follows the nearest cardinal exit direction", () => {
+test("selection pushing follows the target-to-block center direction", () => {
   const left = new EditorModel();
   left.document.setCell(5, 0, "S");
   left.insertText("ABC");
@@ -524,16 +524,16 @@ test("selection pushing follows the nearest cardinal exit direction", () => {
   assert.equal(left.document.getCell(0, 0), "B");
   assert.equal(left.document.getCell(1, 0), "C");
 
-  const alignedTie = new EditorModel();
-  alignedTie.document.setCell(1, 0, "S");
+  const vertical = new EditorModel();
+  vertical.document.setCell(1, 0, "S");
   for (const [y, value] of [..."ABC"].entries()) {
-    alignedTie.document.setCell(1, y + 3, value);
+    vertical.document.setCell(1, y + 3, value);
   }
-  alignedTie.setSelection({ x1: 1, y1: 0, x2: 2, y2: 1 });
-  alignedTie.moveSelection(0, 3);
-  assert.equal(alignedTie.document.getCell(1, 3), "S");
+  vertical.setSelection({ x1: 1, y1: 0, x2: 2, y2: 1 });
+  vertical.moveSelection(0, 3);
+  assert.equal(vertical.document.getCell(1, 3), "S");
   for (const [y, value] of [..."ABC"].entries()) {
-    assert.equal(alignedTie.document.getCell(2, y + 3), value);
+    assert.equal(vertical.document.getCell(1, y + 4), value);
   }
 
   const horizontalTie = new EditorModel();
@@ -560,6 +560,22 @@ test("selection pushing follows the nearest cardinal exit direction", () => {
   assert.equal(verticalNearest.document.getCell(1, 3), "A");
   assert.equal(verticalNearest.document.getCell(5, 3), "E");
   assert.equal(verticalNearest.document.getCell(5, 4), "F");
+});
+
+test("keyboard selection movement pushes only in the pressed direction", () => {
+  const editor = new EditorModel();
+  editor.document.setCell(0, 0, "S");
+  for (const [y, value] of [..."ABC"].entries()) {
+    editor.document.setCell(1, y, value);
+  }
+  editor.setSelection({ x1: 0, y1: 0, x2: 1, y2: 1 });
+
+  editor.moveCursorOrSelection(1, 0);
+
+  assert.equal(editor.document.getCell(1, 0), "S");
+  for (const [y, value] of [..."ABC"].entries()) {
+    assert.equal(editor.document.getCell(2, y), value);
+  }
 });
 
 test("centered overlap uses the shortest exit direction", () => {
