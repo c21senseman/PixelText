@@ -258,16 +258,6 @@ input:focus-visible {
   }
 }
 
-.empty-guide {
-  position: absolute;
-  top: clamp(64px, 16vh, 150px);
-  left: clamp(28px, 8vw, 130px);
-  z-index: 2;
-  width: min(420px, calc(100% - 56px));
-  pointer-events: none;
-  user-select: none;
-}
-
 .eyebrow {
   margin: 0 0 11px;
   color: #92938c;
@@ -275,30 +265,6 @@ input:focus-visible {
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.14em;
-}
-
-.empty-guide h1 {
-  margin: 0;
-  color: #2c2d28;
-  font-size: clamp(28px, 3.2vw, 44px);
-  font-weight: 660;
-  letter-spacing: -0.055em;
-  line-height: 1.08;
-}
-
-.empty-guide > p:not(.eyebrow) {
-  margin: 14px 0 30px;
-  color: #7b7c75;
-  font-size: 15px;
-  letter-spacing: -0.02em;
-}
-
-.guide-keys {
-  display: grid;
-  grid-template-columns: repeat(2, max-content);
-  gap: 9px 22px;
-  color: #9a9b94;
-  font-size: 11px;
 }
 
 kbd {
@@ -822,21 +788,6 @@ kbd {
     width: 34px;
     padding: 0;
     justify-content: center;
-  }
-
-  .empty-guide {
-    top: 64px;
-    left: 24px;
-    width: calc(100% - 48px);
-  }
-
-  .empty-guide h1 {
-    font-size: 30px;
-  }
-
-  .guide-keys {
-    grid-template-columns: 1fr;
-    gap: 8px;
   }
 
   .minimap-shell {

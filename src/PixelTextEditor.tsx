@@ -1151,8 +1151,6 @@ export default function PixelTextEditor() {
     saved: "저장됨",
     error: "저장 실패",
   };
-  const isEmpty = ready && editor.document.cellCount === 0;
-
   return (
     <main className="pixeltext-app">
       <header className="app-header">
@@ -1307,20 +1305,6 @@ export default function PixelTextEditor() {
           <div className="loading-state" role="status">
             <span className="loading-dot" />
             캔버스를 준비하고 있습니다
-          </div>
-        )}
-
-        {isEmpty && (
-          <div className="empty-guide" aria-hidden="true">
-            <p className="eyebrow">INFINITE TEXT CANVAS</p>
-            <h1>어디서든, 바로 쓰세요.</h1>
-            <p>캔버스를 클릭한 뒤 입력하면 됩니다.</p>
-            <div className="guide-keys">
-              <span><kbd>Click</kbd> 커서 놓기</span>
-              <span><kbd>Drag</kbd> 영역 선택</span>
-              <span><kbd>우클릭</kbd> + 끌기 이동</span>
-              <span><kbd>Ctrl</kbd> + 휠 확대</span>
-            </div>
           </div>
         )}
 
