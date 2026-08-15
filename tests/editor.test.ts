@@ -3,7 +3,12 @@ import test from "node:test";
 import { chunkAddress, SparseDocument } from "../lib/document";
 import { EditorModel } from "../lib/editor";
 import { exportJson, importJson } from "../lib/io";
-import { drawEditorCanvas, shouldDrawCursor } from "../lib/renderer";
+import {
+  drawEditorCanvas,
+  minimapBaseBounds,
+  minimapToWorld,
+  shouldDrawCursor,
+} from "../lib/renderer";
 import {
   MIN_ZOOM,
   selectionAutoPanVelocity,
@@ -28,6 +33,44 @@ test("an active selection hides the cursor in both input modes", () => {
   assert.equal(shouldDrawCursor({ selection: null, overwriteMode: false }), true);
   assert.equal(shouldDrawCursor({ selection, overwriteMode: false }), false);
   assert.equal(shouldDrawCursor({ selection, overwriteMode: true }), false);
+});
+
+test("minimap bounds stay fixed to written content as the camera moves", () => {
+  const contentBounds = { minX: 10, minY: 20, maxX: 30, maxY: 25 };
+  const nearView = { x1: 0, y1: 0, x2: 40, y2: 30 };
+  const distantView = { x1: 10_000, y1: -8_000, x2: 10_040, y2: -7_970 };
+
+  assert.deepEqual(
+    minimapBaseBounds(contentBounds, nearView),
+    { minX: 6, minY: 16, maxX: 34, maxY: 29 },
+  );
+  assert.deepEqual(
+    minimapBaseBounds(contentBounds, distantView),
+    minimapBaseBounds(contentBounds, nearView),
+  );
+  assert.deepEqual(minimapBaseBounds(null, distantView), {
+    minX: distantView.x1,
+    minY: distantView.y1,
+    maxX: distantView.x2,
+    maxY: distantView.y2,
+  });
+});
+
+test("minimap dragging outside its drawing area stays within its fixed view", () => {
+  const transform = {
+    worldMinX: 10,
+    worldMinY: 20,
+    worldMaxX: 30,
+    worldMaxY: 40,
+    scale: 2,
+    offsetX: 5,
+    offsetY: 5,
+    padding: 5,
+  };
+
+  assert.deepEqual(minimapToWorld(-100, -100, transform), { x: 10, y: 20 });
+  assert.deepEqual(minimapToWorld(1_000, 1_000, transform), { x: 30, y: 40 });
+  assert.deepEqual(minimapToWorld(25, 35, transform), { x: 20, y: 35 });
 });
 
 test("the canvas renders a visible bookmark marker and name", () => {
