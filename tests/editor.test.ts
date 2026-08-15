@@ -521,69 +521,55 @@ test("selection movement leaves non-target path blocks in place", () => {
   assert.equal(editor.document.getCell(7, 0), "T");
 });
 
-test("selection pushing follows the target-to-block center direction", () => {
-  const left = new EditorModel();
-  left.document.setCell(5, 0, "S");
-  left.insertText("ABC");
-  left.setSelection({ x1: 5, y1: 0, x2: 6, y2: 1 });
-  left.moveSelection(-3, 0);
-  assert.equal(left.document.getCell(2, 0), "S");
-  assert.equal(left.document.getCell(-1, 0), "A");
-  assert.equal(left.document.getCell(0, 0), "B");
-  assert.equal(left.document.getCell(1, 0), "C");
+test("selection movement detects clear and overlapping target positions", () => {
+  const editor = new EditorModel();
+  editor.document.setCell(0, 0, "S");
+  editor.document.setCell(2, 0, "A");
+  editor.setSelection({ x1: 0, y1: 0, x2: 1, y2: 1 });
 
+  assert.equal(editor.selectionMoveTargetOverlapsText(0, 0), false);
+  assert.equal(editor.selectionMoveTargetOverlapsText(1, 0), false);
+  assert.equal(editor.selectionMoveTargetOverlapsText(2, 0), true);
+});
+
+test("drag pushing follows the last clear target position", () => {
+  const editor = new EditorModel();
+  editor.document.setCell(0, 0, "S");
+  editor.document.setCell(1, 0, "A");
+  editor.document.setCell(2, 0, "B");
+  editor.document.setCell(3, 0, "C");
+  editor.setSelection({ x1: 0, y1: 0, x2: 1, y2: 1 });
+
+  editor.moveSelection(3, 0, {
+    lastNonOverlappingOffset: { x: 0, y: 0 },
+  });
+
+  assert.equal(editor.document.getCell(3, 0), "S");
+  assert.equal(editor.document.getCell(4, 0), "A");
+  assert.equal(editor.document.getCell(5, 0), "B");
+  assert.equal(editor.document.getCell(6, 0), "C");
+});
+
+test("diagonal drag pushing chooses one dominant cardinal direction", () => {
   const vertical = new EditorModel();
-  vertical.document.setCell(1, 0, "S");
-  for (const [y, value] of [..."ABC"].entries()) {
-    vertical.document.setCell(1, y + 3, value);
-  }
-  vertical.setSelection({ x1: 1, y1: 0, x2: 2, y2: 1 });
-  vertical.moveSelection(0, 3);
-  assert.equal(vertical.document.getCell(1, 3), "S");
-  for (const [y, value] of [..."ABC"].entries()) {
-    assert.equal(vertical.document.getCell(1, y + 4), value);
-  }
+  vertical.document.setCell(0, 0, "S");
+  vertical.document.setCell(3, 3, "A");
+  vertical.setSelection({ x1: 0, y1: 0, x2: 1, y2: 1 });
+  vertical.moveSelection(3, 3, {
+    lastNonOverlappingOffset: { x: 2, y: 0 },
+  });
+  assert.equal(vertical.document.getCell(3, 3), "S");
+  assert.equal(vertical.document.getCell(3, 4), "A");
 
   const horizontalTie = new EditorModel();
   horizontalTie.document.setCell(0, 0, "S");
   horizontalTie.document.setCell(2, 2, "A");
-  horizontalTie.document.setCell(3, 2, "B");
-  horizontalTie.document.setCell(3, 3, "C");
   horizontalTie.setSelection({ x1: 0, y1: 0, x2: 1, y2: 1 });
-  horizontalTie.moveSelection(2, 2);
+  horizontalTie.moveSelection(2, 2, {
+    lastNonOverlappingOffset: { x: 0, y: 0 },
+  });
   assert.equal(horizontalTie.document.getCell(2, 2), "S");
   assert.equal(horizontalTie.document.getCell(3, 2), "A");
-  assert.equal(horizontalTie.document.getCell(4, 2), "B");
-  assert.equal(horizontalTie.document.getCell(4, 3), "C");
-
-  const verticalNearest = new EditorModel();
-  verticalNearest.document.setCell(0, 0, "S");
-  for (const [offset, value] of [..."ABCDE"].entries()) {
-    verticalNearest.document.setCell(offset + 1, 2, value);
-  }
-  verticalNearest.document.setCell(5, 3, "F");
-  verticalNearest.setSelection({ x1: 0, y1: 0, x2: 1, y2: 1 });
-  verticalNearest.moveSelection(2, 2);
-  assert.equal(verticalNearest.document.getCell(2, 2), "S");
-  assert.equal(verticalNearest.document.getCell(1, 3), "A");
-  assert.equal(verticalNearest.document.getCell(5, 3), "E");
-  assert.equal(verticalNearest.document.getCell(5, 4), "F");
-});
-
-test("selection pushing centers the target on its existing text only", () => {
-  const editor = new EditorModel();
-  editor.document.setCell(0, 2, "S");
-  editor.document.setCell(0, 0, "A");
-  editor.document.setCell(1, 0, "B");
-  editor.document.setCell(2, 0, "C");
-  editor.setSelection({ x1: 0, y1: 2, x2: 5, y2: 3 });
-
-  editor.moveSelection(0, -2);
-
-  assert.equal(editor.document.getCell(0, 0), "S");
-  assert.equal(editor.document.getCell(0, 1), "A");
-  assert.equal(editor.document.getCell(1, 1), "B");
-  assert.equal(editor.document.getCell(2, 1), "C");
 });
 
 test("keyboard selection movement pushes only in the pressed direction", () => {
@@ -602,17 +588,19 @@ test("keyboard selection movement pushes only in the pressed direction", () => {
   }
 });
 
-test("centered overlap uses the shortest exit direction", () => {
+test("drag pushing follows its approach instead of the shortest block exit", () => {
   const editor = new EditorModel();
   editor.document.setCell(0, 2, "S");
   editor.insertText("ABCDE");
   editor.setSelection({ x1: 0, y1: 2, x2: 5, y2: 3 });
 
-  editor.moveSelection(0, -2);
+  editor.moveSelection(0, -2, {
+    lastNonOverlappingOffset: { x: 0, y: -1 },
+  });
 
   assert.equal(editor.copySelection(), "S    ");
-  assert.equal(editor.document.getCell(0, 1), "A");
-  assert.equal(editor.document.getCell(4, 1), "E");
+  assert.equal(editor.document.getCell(0, -1), "A");
+  assert.equal(editor.document.getCell(4, -1), "E");
 });
 
 test("pushed target sentences move colliding blocks in a chain", () => {
@@ -622,21 +610,39 @@ test("pushed target sentences move colliding blocks in a chain", () => {
   for (const [offset, value] of [..."ABCD"].entries()) {
     editor.document.setCell(offset + 5, 0, value);
   }
-  editor.document.setCell(8, 1, "E");
-  editor.document.setCell(8, 2, "F");
-  editor.document.setCell(8, 4, "T");
-  editor.setSelection({ x1: 0, y1: 0, x2: 4, y2: 2 });
+  editor.document.setCell(11, 0, "T");
+  editor.setSelection({ x1: 0, y1: 0, x2: 4, y2: 1 });
 
   editor.moveSelection(5, 0);
 
   assert.equal(editor.document.getCell(5, 0), "X");
   assert.equal(editor.document.getCell(6, 0), "Y");
   for (const [offset, value] of [..."ABCD"].entries()) {
-    assert.equal(editor.document.getCell(offset + 5, 2), value);
+    assert.equal(editor.document.getCell(offset + 9, 0), value);
   }
-  assert.equal(editor.document.getCell(8, 3), "E");
-  assert.equal(editor.document.getCell(8, 4), "F");
-  assert.equal(editor.document.getCell(8, 5), "T");
+  assert.equal(editor.document.getCell(13, 0), "T");
+});
+
+test("pushed text blocks stay intact while crossing the cleared source", () => {
+  const editor = new EditorModel();
+  editor.document.setCell(0, 0, "S");
+  editor.document.setCell(-1, -1, "A");
+  editor.document.setCell(1, -1, "B");
+  editor.document.setCell(-1, 0, "C");
+  editor.setSelection({ x1: 0, y1: 0, x2: 3, y2: 2 });
+
+  assert.equal(editor.selectionMoveTargetOverlapsText(-1, -3), false);
+  assert.equal(editor.selectionMoveTargetOverlapsText(-1, -1), true);
+  editor.moveSelection(-1, -1, {
+    lastNonOverlappingOffset: { x: -1, y: -3 },
+  });
+
+  assert.equal(editor.document.getCell(-1, -1), "S");
+  assert.equal(editor.document.getCell(-1, 1), "A");
+  assert.equal(editor.document.getCell(0, 1), null);
+  assert.equal(editor.document.getCell(1, 1), "B");
+  assert.equal(editor.document.getCell(-1, 2), "C");
+  assert.equal(editor.document.getCell(1, 0), null);
 });
 
 test("an empty target uses simple movement even when the path has text", () => {

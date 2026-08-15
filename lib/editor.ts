@@ -29,6 +29,32 @@ function snapshotState(
   return { cursor: { ...cursor }, selection: cloneSelection(selection) };
 }
 
+function translateSelection(
+  selection: Selection,
+  dx: number,
+  dy: number,
+): Selection {
+  return {
+    x1: safeAdd(selection.x1, dx),
+    y1: safeAdd(selection.y1, dy),
+    x2: safeAdd(selection.x2, dx),
+    y2: safeAdd(selection.y2, dy),
+  };
+}
+
+function cardinalStepBetween(from: Position, to: Position): Position {
+  let dx = to.x - from.x;
+  let dy = to.y - from.y;
+  if (dx === 0 && dy === 0) {
+    dx = to.x;
+    dy = to.y;
+  }
+  if (Math.abs(dx) >= Math.abs(dy) && dx !== 0) {
+    return { x: Math.sign(dx), y: 0 };
+  }
+  return { x: 0, y: Math.sign(dy) };
+}
+
 class Transaction {
   private readonly changes = new Map<string, Change>();
 
@@ -82,6 +108,10 @@ class Transaction {
 export type EditorChangeKind = "transient" | "document" | "bookmarks";
 export type EditorListener = (change: EditorChangeKind) => void;
 export type SelectionResizeEdge = "left" | "right" | "top" | "bottom";
+export type SelectionMoveOptions = {
+  pushDirection?: Position;
+  lastNonOverlappingOffset?: Position;
+};
 
 export class EditorModel {
   document: SparseDocument;
@@ -136,7 +166,7 @@ export class EditorModel {
       const pushDirection = dx !== 0
         ? { x: Math.sign(dx), y: 0 }
         : { x: 0, y: Math.sign(dy) };
-      this.moveSelection(dx, dy, pushDirection);
+      this.moveSelection(dx, dy, { pushDirection });
       return;
     }
     this.moveCursor(dx, dy);
@@ -696,6 +726,28 @@ export class EditorModel {
     if (start) this.commit(transaction, before, start, null);
   }
 
+  selectionMoveTargetOverlapsText(dx: number, dy: number): boolean {
+    const selection = this.selection;
+    if (!selection) return false;
+    const target = translateSelection(selection, dx, dy);
+    let overlaps = false;
+    this.document.forEachInRect(
+      target.x1,
+      target.y1,
+      target.x2,
+      target.y2,
+      (x, y) => {
+        const belongsToSelection =
+          x >= selection.x1 &&
+          x < selection.x2 &&
+          y >= selection.y1 &&
+          y < selection.y2;
+        if (!belongsToSelection) overlaps = true;
+      },
+    );
+    return overlaps;
+  }
+
   private collectTextBlock(
     transaction: Transaction,
     start: Position,
@@ -738,11 +790,10 @@ export class EditorModel {
 
   private shiftTextBlockOneStep(
     transaction: Transaction,
-    start: Position,
+    moving: Map<string, { x: number; y: number; value: string }>,
     step: Position,
     clearedPath: ReadonlySet<string>,
-  ): Position[] {
-    const moving = this.collectTextBlock(transaction, start, clearedPath);
+  ): Map<string, { x: number; y: number; value: string }> {
     const cells = Array.from(moving.values());
 
     for (let index = 0; index < cells.length; index += 1) {
@@ -773,112 +824,40 @@ export class EditorModel {
     const destinations = cells.map((cell) => ({
       x: safeAdd(cell.x, step.x),
       y: safeAdd(cell.y, step.y),
+      value: cell.value,
     }));
     for (const cell of cells) transaction.set(cell.x, cell.y, null);
-    for (let index = 0; index < cells.length; index += 1) {
-      transaction.set(
-        destinations[index].x,
-        destinations[index].y,
-        cells[index].value,
-      );
+    const shifted = new Map<string, { x: number; y: number; value: string }>();
+    for (const destination of destinations) {
+      transaction.set(destination.x, destination.y, destination.value);
+      shifted.set(coordinateKey(destination.x, destination.y), destination);
     }
-    return destinations;
-  }
-
-  private textBlockPushDirection(
-    target: Selection,
-    targetTextBounds: Selection,
-    block: ReadonlyMap<string, { x: number; y: number; value: string }>,
-  ): Position {
-    let minX = Number.MAX_SAFE_INTEGER;
-    let minY = Number.MAX_SAFE_INTEGER;
-    let maxX = Number.MIN_SAFE_INTEGER;
-    let maxY = Number.MIN_SAFE_INTEGER;
-    for (const cell of block.values()) {
-      minX = Math.min(minX, cell.x);
-      minY = Math.min(minY, cell.y);
-      maxX = Math.max(maxX, cell.x);
-      maxY = Math.max(maxY, cell.y);
-    }
-
-    const targetCenterX =
-      BigInt(targetTextBounds.x1) + BigInt(targetTextBounds.x2) - 1n;
-    const targetCenterY =
-      BigInt(targetTextBounds.y1) + BigInt(targetTextBounds.y2) - 1n;
-    const blockCenterX = BigInt(minX) + BigInt(maxX);
-    const blockCenterY = BigInt(minY) + BigInt(maxY);
-    const candidates: Array<{ distance: bigint; step: Position }> = [];
-    if (blockCenterX > targetCenterX) {
-      candidates.push({
-        distance: BigInt(target.x2) - BigInt(minX),
-        step: { x: 1, y: 0 },
-      });
-    } else if (blockCenterX < targetCenterX) {
-      candidates.push({
-        distance: BigInt(maxX) - BigInt(target.x1) + 1n,
-        step: { x: -1, y: 0 },
-      });
-    }
-    if (blockCenterY > targetCenterY) {
-      candidates.push({
-        distance: BigInt(target.y2) - BigInt(minY),
-        step: { x: 0, y: 1 },
-      });
-    } else if (blockCenterY < targetCenterY) {
-      candidates.push({
-        distance: BigInt(maxY) - BigInt(target.y1) + 1n,
-        step: { x: 0, y: -1 },
-      });
-    }
-    if (candidates.length === 0) {
-      candidates.push(
-        {
-          distance: BigInt(target.x2) - BigInt(minX),
-          step: { x: 1, y: 0 },
-        },
-        {
-          distance: BigInt(maxX) - BigInt(target.x1) + 1n,
-          step: { x: -1, y: 0 },
-        },
-        {
-          distance: BigInt(target.y2) - BigInt(minY),
-          step: { x: 0, y: 1 },
-        },
-        {
-          distance: BigInt(maxY) - BigInt(target.y1) + 1n,
-          step: { x: 0, y: -1 },
-        },
-      );
-    }
-    return candidates.reduce((closest, candidate) =>
-      candidate.distance < closest.distance ? candidate : closest,
-    ).step;
+    return shifted;
   }
 
   private pushTextBlockOutOfTarget(
     transaction: Transaction,
-    start: Position,
+    block: Map<string, { x: number; y: number; value: string }>,
     step: Position,
     target: Selection,
     clearedSource: ReadonlySet<string>,
   ): void {
-    let position = start;
-    while (transaction.get(position.x, position.y) !== null) {
-      const destinations = this.shiftTextBlockOneStep(
+    let moving = block;
+    while (
+      Array.from(moving.values()).some(
+        (cell) =>
+          cell.x >= target.x1 &&
+          cell.x < target.x2 &&
+          cell.y >= target.y1 &&
+          cell.y < target.y2,
+      )
+    ) {
+      moving = this.shiftTextBlockOneStep(
         transaction,
-        position,
+        moving,
         step,
         clearedSource,
       );
-      const overlap = destinations.find(
-        (destination) =>
-          destination.x >= target.x1 &&
-          destination.x < target.x2 &&
-          destination.y >= target.y1 &&
-          destination.y < target.y2,
-      );
-      if (!overlap) return;
-      position = overlap;
     }
   }
 
@@ -886,7 +865,7 @@ export class EditorModel {
     transaction: Transaction,
     selection: Selection,
     target: Selection,
-    pushDirection?: Position,
+    pushDirection: Position,
   ): void {
     const width = safeAdd(selection.x2, -selection.x1);
     const height = safeAdd(selection.y2, -selection.y1);
@@ -901,23 +880,14 @@ export class EditorModel {
 
     while (true) {
       let overlap: Position | null = null;
-      let targetTextBounds: Selection | null = null;
       for (let y = target.y1; y < target.y2; y += 1) {
         for (let x = target.x1; x < target.x2; x += 1) {
           if (transaction.get(x, y) !== null) {
             overlap ??= { x, y };
-            if (pushDirection) break;
-            if (!targetTextBounds) {
-              targetTextBounds = { x1: x, y1: y, x2: x + 1, y2: y + 1 };
-            } else {
-              targetTextBounds.x1 = Math.min(targetTextBounds.x1, x);
-              targetTextBounds.y1 = Math.min(targetTextBounds.y1, y);
-              targetTextBounds.x2 = Math.max(targetTextBounds.x2, x + 1);
-              targetTextBounds.y2 = Math.max(targetTextBounds.y2, y + 1);
-            }
+            break;
           }
         }
-        if (pushDirection && overlap) break;
+        if (overlap) break;
       }
       if (!overlap) return;
       const block = this.collectTextBlock(
@@ -925,30 +895,24 @@ export class EditorModel {
         overlap,
         clearedSource,
       );
-      const step = pushDirection ?? this.textBlockPushDirection(
-        target,
-        targetTextBounds!,
-        block,
-      );
       this.pushTextBlockOutOfTarget(
         transaction,
-        overlap,
-        step,
+        block,
+        pushDirection,
         target,
         clearedSource,
       );
     }
   }
 
-  moveSelection(dx: number, dy: number, pushDirection?: Position): void {
+  moveSelection(
+    dx: number,
+    dy: number,
+    options: SelectionMoveOptions = {},
+  ): void {
     const selection = this.selection;
     if (!selection || (dx === 0 && dy === 0)) return;
-    const target: Selection = {
-      x1: safeAdd(selection.x1, dx),
-      y1: safeAdd(selection.y1, dy),
-      x2: safeAdd(selection.x2, dx),
-      y2: safeAdd(selection.y2, dy),
-    };
+    const target = translateSelection(selection, dx, dy);
 
     const snapshot: Array<{ x: number; y: number; value: string }> = [];
     this.document.forEachInRect(
@@ -958,21 +922,7 @@ export class EditorModel {
       selection.y2,
       (x, y, value) => snapshot.push({ x, y, value }),
     );
-    let targetHasExistingText = false;
-    this.document.forEachInRect(
-      target.x1,
-      target.y1,
-      target.x2,
-      target.y2,
-      (x, y) => {
-        const belongsToSelection =
-          x >= selection.x1 &&
-          x < selection.x2 &&
-          y >= selection.y1 &&
-          y < selection.y2;
-        if (!belongsToSelection) targetHasExistingText = true;
-      },
-    );
+    const targetHasExistingText = this.selectionMoveTargetOverlapsText(dx, dy);
 
     const before = snapshotState(this.cursor, this.selection);
     const transaction = new Transaction(this.document);
@@ -984,6 +934,10 @@ export class EditorModel {
       (x, y) => transaction.set(x, y, null),
     );
     if (!this.overwriteMode && targetHasExistingText) {
+      const pushDirection = options.pushDirection ?? cardinalStepBetween(
+        options.lastNonOverlappingOffset ?? { x: 0, y: 0 },
+        { x: dx, y: dy },
+      );
       this.pushTextOverlappingTarget(
         transaction,
         selection,

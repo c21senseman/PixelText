@@ -66,6 +66,7 @@ type DragState =
       start: Position;
       dx: number;
       dy: number;
+      lastNonOverlappingOffset: Position;
     }
   | {
       kind: "resize";
@@ -851,6 +852,7 @@ export default function PixelTextEditor() {
         start: cell,
         dx: 0,
         dy: 0,
+        lastNonOverlappingOffset: { x: 0, y: 0 },
       };
       setSelectionPreview({ dx: 0, dy: 0 });
       return;
@@ -919,6 +921,9 @@ export default function PixelTextEditor() {
     }
     drag.dx = cell.x - drag.start.x;
     drag.dy = cell.y - drag.start.y;
+    if (!editor.selectionMoveTargetOverlapsText(drag.dx, drag.dy)) {
+      drag.lastNonOverlappingOffset = { x: drag.dx, y: drag.dy };
+    }
     setSelectionPreview({ dx: drag.dx, dy: drag.dy });
   };
 
@@ -943,7 +948,9 @@ export default function PixelTextEditor() {
         }
       });
     } else if (drag.kind === "move" && (drag.dx !== 0 || drag.dy !== 0)) {
-      runAction(() => editor.moveSelection(drag.dx, drag.dy));
+      runAction(() => editor.moveSelection(drag.dx, drag.dy, {
+        lastNonOverlappingOffset: drag.lastNonOverlappingOffset,
+      }));
     } else if (drag.kind === "move") {
       editor.setCursor(drag.start);
     } else if (drag.kind === "select" && !drag.moved) {
@@ -1497,7 +1504,7 @@ export default function PixelTextEditor() {
               <div><dt>미니맵 확대 · 축소</dt><dd>미니맵 위 <kbd>Ctrl</kbd> + 휠</dd></div>
               <div><dt>사각형 선택</dt><dd>캔버스 끌기 · 가장자리 자동 이동</dd></div>
               <div><dt>선택 크기</dt><dd>선택 영역의 상하좌우 경계 끌기</dd></div>
-              <div><dt>선택 이동</dt><dd>삽입 모드: 방향키 방향 · 끌기는 목표 문자 중심 기준</dd></div>
+              <div><dt>선택 이동</dt><dd>삽입 모드: 방향키 방향 · 끌기는 마지막 비겹침 위치 기준</dd></div>
               <div><dt>입력 모드</dt><dd><kbd>Insert</kbd> 삽입 · 덮어쓰기 전환</dd></div>
               <div><dt>실행 취소</dt><dd><kbd>Ctrl</kbd> + <kbd>Z</kbd></dd></div>
               <div><dt>다시 실행</dt><dd><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Z</kbd></dd></div>
