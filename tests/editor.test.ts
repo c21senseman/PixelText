@@ -252,6 +252,54 @@ test("selection deletion and undo restore cells, cursor, and selection", () => {
   assert.equal(editor.document.getCell(1, 0), null);
 });
 
+test("backspace collapses selected cells and pulls attached text left", () => {
+  const leadingBlank = new EditorModel();
+  leadingBlank.setCursor({ x: 4, y: 0 });
+  leadingBlank.insertText("abcdefg");
+  leadingBlank.setSelection({ x1: 0, y1: 0, x2: 4, y2: 1 });
+
+  leadingBlank.backspace();
+  assert.deepEqual(leadingBlank.cursor, { x: 0, y: 0 });
+  assert.equal(leadingBlank.selection, null);
+  assert.equal(leadingBlank.document.getCell(0, 0), "a");
+  assert.equal(leadingBlank.document.getCell(6, 0), "g");
+  assert.equal(leadingBlank.document.getCell(7, 0), null);
+
+  leadingBlank.undo();
+  assert.equal(leadingBlank.document.getCell(0, 0), null);
+  assert.equal(leadingBlank.document.getCell(4, 0), "a");
+  assert.equal(leadingBlank.document.getCell(10, 0), "g");
+  assert.deepEqual(leadingBlank.selection, {
+    x1: 0,
+    y1: 0,
+    x2: 4,
+    y2: 1,
+  });
+
+  const containingText = new EditorModel();
+  containingText.insertText("ABCDEFG");
+  containingText.setSelection({ x1: 1, y1: 0, x2: 3, y2: 1 });
+  containingText.backspace();
+
+  assert.equal(containingText.document.getCell(0, 0), "A");
+  assert.equal(containingText.document.getCell(1, 0), "D");
+  assert.equal(containingText.document.getCell(4, 0), "G");
+  assert.equal(containingText.document.getCell(5, 0), null);
+  assert.deepEqual(containingText.cursor, { x: 1, y: 0 });
+});
+
+test("selection backspace does not pull detached text", () => {
+  const editor = new EditorModel();
+  editor.setCursor({ x: 5, y: 0 });
+  editor.insertText("AB");
+  editor.setSelection({ x1: 0, y1: 0, x2: 3, y2: 1 });
+
+  editor.backspace();
+  assert.equal(editor.document.getCell(5, 0), "A");
+  assert.equal(editor.document.getCell(6, 0), "B");
+  assert.deepEqual(editor.cursor, { x: 0, y: 0 });
+});
+
 test("arrow keys clear a rectangular selection and move from the current cursor", () => {
   const editor = new EditorModel();
   editor.setCursor({ x: 4, y: 3 });

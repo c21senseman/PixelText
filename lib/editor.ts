@@ -157,6 +157,44 @@ export class EditorModel {
     return { x: selection.x1, y: selection.y1 };
   }
 
+  private clearSelectionAndPullLeft(
+    transaction: Transaction,
+    selection: Selection,
+  ): Position {
+    const width = safeAdd(selection.x2, -selection.x1);
+    const moving: Array<{
+      fromX: number;
+      toX: number;
+      y: number;
+      value: string;
+    }> = [];
+
+    for (let y = selection.y1; y < selection.y2; y += 1) {
+      let x = selection.x2;
+      while (transaction.isTextCell(x, y)) {
+        const value = transaction.get(x, y);
+        if (value !== null) {
+          moving.push({
+            fromX: x,
+            toX: safeAdd(x, -width),
+            y,
+            value,
+          });
+        }
+        if (x === Number.MAX_SAFE_INTEGER) break;
+        x += 1;
+      }
+      if (y === Number.MAX_SAFE_INTEGER) break;
+    }
+
+    this.clearSelectionInTransaction(transaction);
+    for (const item of moving) transaction.set(item.fromX, item.y, null);
+    for (const item of moving) {
+      transaction.set(item.toX, item.y, item.value);
+    }
+    return { x: selection.x1, y: selection.y1 };
+  }
+
   private commit(
     transaction: Transaction,
     before: EditorSnapshot,
@@ -330,8 +368,12 @@ export class EditorModel {
   backspace(): void {
     const before = snapshotState(this.cursor, this.selection);
     const transaction = new Transaction(this.document);
-    const selectionStart = this.clearSelectionInTransaction(transaction);
-    if (selectionStart) {
+    const selection = this.selection;
+    if (selection) {
+      const selectionStart = this.clearSelectionAndPullLeft(
+        transaction,
+        selection,
+      );
       this.commit(transaction, before, selectionStart, null);
       return;
     }
