@@ -1,8 +1,5 @@
 node_modules/
 dist/
-.next/
-.vinext/
-.wrangler/
 *.tsbuildinfo
 *.log
 .env

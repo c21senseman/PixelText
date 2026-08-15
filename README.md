@@ -19,4 +19,15 @@ npm install
 npm run dev
 ```
 
-편집 엔진 테스트는 `npm test`, 배포용 빌드는 `npm run build`로 실행합니다.
+## 단일 HTML 빌드
+
+```bash
+npm run build
+```
+
+빌드 결과는 `dist/index.html` 하나입니다. 스타일, React 런타임, 편집기 코드와
+아이콘이 모두 문서 안에 포함되므로 별도 서버나 정적 자산 없이 파일 하나만
+배포하거나 오프라인에서 열 수 있습니다.
+
+편집 엔진 테스트는 `npm test`, 타입 검사는 `npm run typecheck`, 정적 검사는
+`npm run lint`로 실행합니다.
