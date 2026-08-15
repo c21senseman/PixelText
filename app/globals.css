@@ -203,8 +203,12 @@ input:focus-visible {
   cursor: grabbing;
 }
 
-.editor-canvas.is-resizing-selection {
+.editor-canvas.is-resizing-selection-horizontal {
   cursor: ew-resize;
+}
+
+.editor-canvas.is-resizing-selection-vertical {
+  cursor: ns-resize;
 }
 
 .ime-input {

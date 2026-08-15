@@ -72,10 +72,40 @@ type DragState =
       pointerId: number;
       edge: SelectionResizeEdge;
       original: Selection;
-      boundaryX: number;
+      boundary: number;
     };
 
 const DEFAULT_CAMERA: Camera = { x: 0, y: 0, zoom: 1 };
+
+function isHorizontalResizeEdge(
+  edge: SelectionResizeEdge,
+): edge is "left" | "right" {
+  return edge === "left" || edge === "right";
+}
+
+function selectionBoundary(
+  selection: Selection,
+  edge: SelectionResizeEdge,
+): number {
+  if (edge === "left") return selection.x1;
+  if (edge === "right") return selection.x2;
+  if (edge === "top") return selection.y1;
+  return selection.y2;
+}
+
+function setSelectionResizeCursor(
+  canvas: HTMLCanvasElement,
+  edge: SelectionResizeEdge | null,
+): void {
+  canvas.classList.toggle(
+    "is-resizing-selection-horizontal",
+    edge !== null && isHorizontalResizeEdge(edge),
+  );
+  canvas.classList.toggle(
+    "is-resizing-selection-vertical",
+    edge === "top" || edge === "bottom",
+  );
+}
 
 function messageFromError(error: unknown): string {
   if (error instanceof EditorError || error instanceof Error) return error.message;
@@ -595,32 +625,47 @@ export default function PixelTextEditor() {
     if (!canvas || !selection) return null;
     const rect = canvas.getBoundingClientRect();
     const viewport = { width: rect.width, height: rect.height };
-    const left = logicalToScreen(
+    const topLeft = logicalToScreen(
       { x: selection.x1, y: selection.y1 },
       cameraRef.current,
       viewport,
     );
-    const right = logicalToScreen(
+    const bottomRight = logicalToScreen(
       { x: selection.x2, y: selection.y2 },
       cameraRef.current,
       viewport,
     );
     const pointerX = event.clientX - rect.left;
     const pointerY = event.clientY - rect.top;
+    const metrics = cellMetrics(cameraRef.current);
     const hitSlop = Math.min(
       9,
-      Math.max(5, cellMetrics(cameraRef.current).width * 0.25),
+      Math.max(5, Math.min(metrics.width, metrics.height) * 0.25),
     );
-    if (
-      pointerY < Math.min(left.y, right.y) - hitSlop ||
-      pointerY > Math.max(left.y, right.y) + hitSlop
-    ) {
-      return null;
+    const minX = Math.min(topLeft.x, bottomRight.x);
+    const maxX = Math.max(topLeft.x, bottomRight.x);
+    const minY = Math.min(topLeft.y, bottomRight.y);
+    const maxY = Math.max(topLeft.y, bottomRight.y);
+    const candidates: Array<{
+      edge: SelectionResizeEdge;
+      distance: number;
+    }> = [];
+    if (pointerY >= minY - hitSlop && pointerY <= maxY + hitSlop) {
+      candidates.push(
+        { edge: "left", distance: Math.abs(pointerX - topLeft.x) },
+        { edge: "right", distance: Math.abs(pointerX - bottomRight.x) },
+      );
     }
-    const leftDistance = Math.abs(pointerX - left.x);
-    const rightDistance = Math.abs(pointerX - right.x);
-    if (leftDistance > hitSlop && rightDistance > hitSlop) return null;
-    return leftDistance <= rightDistance ? "left" : "right";
+    if (pointerX >= minX - hitSlop && pointerX <= maxX + hitSlop) {
+      candidates.push(
+        { edge: "top", distance: Math.abs(pointerY - topLeft.y) },
+        { edge: "bottom", distance: Math.abs(pointerY - bottomRight.y) },
+      );
+    }
+    const nearest = candidates
+      .filter((candidate) => candidate.distance <= hitSlop)
+      .sort((a, b) => a.distance - b.distance)[0];
+    return nearest?.edge ?? null;
   };
 
   const pointerBoundaryX = (
@@ -639,6 +684,24 @@ export default function PixelTextEditor() {
       return null;
     }
     return boundaryX;
+  };
+
+  const pointerBoundaryY = (
+    event: PointerEvent<HTMLCanvasElement>,
+  ): number | null => {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    const metrics = cellMetrics(cameraRef.current);
+    const logicalY =
+      cameraRef.current.y +
+      (event.clientY - rect.top - rect.height / 2) / metrics.height;
+    const boundaryY = Math.round(logicalY);
+    if (!Number.isSafeInteger(boundaryY)) {
+      showError(new EditorError("이 위치까지 선택 영역을 조절할 수 없습니다."));
+      return null;
+    }
+    return boundaryY;
   };
 
   const stopSelectionAutoPan = () => {
@@ -745,10 +808,10 @@ export default function PixelTextEditor() {
         pointerId: event.pointerId,
         edge: resizeEdge,
         original,
-        boundaryX: resizeEdge === "left" ? original.x1 : original.x2,
+        boundary: selectionBoundary(original, resizeEdge),
       };
       setSelectionResizePreview(original);
-      event.currentTarget.classList.add("is-resizing-selection");
+      setSelectionResizeCursor(event.currentTarget, resizeEdge);
       return;
     }
     const cell = pointerCell(event);
@@ -781,10 +844,7 @@ export default function PixelTextEditor() {
   const handlePointerMove = (event: PointerEvent<HTMLCanvasElement>) => {
     const drag = dragRef.current;
     if (!drag) {
-      event.currentTarget.classList.toggle(
-        "is-resizing-selection",
-        resizeEdgeAtPointer(event) !== null,
-      );
+      setSelectionResizeCursor(event.currentTarget, resizeEdgeAtPointer(event));
       return;
     }
     if (drag.pointerId !== event.pointerId) return;
@@ -798,17 +858,25 @@ export default function PixelTextEditor() {
       return;
     }
     if (drag.kind === "resize") {
-      const pointerX = pointerBoundaryX(event);
-      if (pointerX === null) return;
-      drag.boundaryX =
-        drag.edge === "left"
-          ? Math.min(pointerX, drag.original.x2 - 1)
-          : Math.max(pointerX, drag.original.x1 + 1);
-      setSelectionResizePreview({
-        ...drag.original,
-        x1: drag.edge === "left" ? drag.boundaryX : drag.original.x1,
-        x2: drag.edge === "right" ? drag.boundaryX : drag.original.x2,
-      });
+      const pointerBoundary = isHorizontalResizeEdge(drag.edge)
+        ? pointerBoundaryX(event)
+        : pointerBoundaryY(event);
+      if (pointerBoundary === null) return;
+      if (drag.edge === "left") {
+        drag.boundary = Math.min(pointerBoundary, drag.original.x2 - 1);
+      } else if (drag.edge === "right") {
+        drag.boundary = Math.max(pointerBoundary, drag.original.x1 + 1);
+      } else if (drag.edge === "top") {
+        drag.boundary = Math.min(pointerBoundary, drag.original.y2 - 1);
+      } else {
+        drag.boundary = Math.max(pointerBoundary, drag.original.y1 + 1);
+      }
+      const preview = { ...drag.original };
+      if (drag.edge === "left") preview.x1 = drag.boundary;
+      else if (drag.edge === "right") preview.x2 = drag.boundary;
+      else if (drag.edge === "top") preview.y1 = drag.boundary;
+      else preview.y2 = drag.boundary;
+      setSelectionResizePreview(preview);
       return;
     }
     const cell = pointerCell(event);
@@ -836,15 +904,18 @@ export default function PixelTextEditor() {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
     event.currentTarget.classList.remove("is-panning");
-    event.currentTarget.classList.remove("is-resizing-selection");
+    setSelectionResizeCursor(event.currentTarget, null);
     if (
       drag.kind === "resize" &&
-      drag.boundaryX !==
-        (drag.edge === "left" ? drag.original.x1 : drag.original.x2)
+      drag.boundary !== selectionBoundary(drag.original, drag.edge)
     ) {
-      runAction(() =>
-        editor.resizeSelectionHorizontal(drag.edge, drag.boundaryX),
-      );
+      runAction(() => {
+        if (isHorizontalResizeEdge(drag.edge)) {
+          editor.resizeSelectionHorizontal(drag.edge, drag.boundary);
+        } else {
+          editor.resizeSelectionVertical(drag.edge, drag.boundary);
+        }
+      });
     } else if (drag.kind === "move" && (drag.dx !== 0 || drag.dy !== 0)) {
       runAction(() => editor.moveSelection(drag.dx, drag.dy));
     } else if (drag.kind === "move") {
@@ -862,7 +933,7 @@ export default function PixelTextEditor() {
 
   const handlePointerLeave = (event: PointerEvent<HTMLCanvasElement>) => {
     if (!dragRef.current) {
-      event.currentTarget.classList.remove("is-resizing-selection");
+      setSelectionResizeCursor(event.currentTarget, null);
     }
   };
 
@@ -1163,9 +1234,10 @@ export default function PixelTextEditor() {
         />
         <p id="canvas-instructions" className="sr-only">
           방향키로 커서를 이동하고, 마우스 끌기로 사각형을 선택합니다. 선택
-          중 화면 가장자리로 끌면 캔버스가 자동 이동합니다. 선택의 좌우 세로
-          경계를 끌면 폭과 자동 줄바꿈을 조절합니다. 마우스 오른쪽 버튼을 누른
-          채 끌면 화면을 이동하고 Ctrl과 휠로 확대합니다.
+          중 화면 가장자리로 끌면 캔버스가 자동 이동합니다. 선택의 상하좌우
+          경계를 끌면 크기를 조절하며, 오른쪽 경계를 줄일 때만 자동 줄바꿈을
+          적용합니다. 마우스 오른쪽 버튼을 누른 채 끌면 화면을 이동하고 Ctrl과
+          휠로 확대합니다.
         </p>
         <textarea
           ref={textareaRef}
@@ -1379,6 +1451,7 @@ export default function PixelTextEditor() {
               <div><dt>확대 · 축소</dt><dd><kbd>Ctrl</kbd> + 휠</dd></div>
               <div><dt>미니맵 확대 · 축소</dt><dd>미니맵 위 <kbd>Ctrl</kbd> + 휠</dd></div>
               <div><dt>사각형 선택</dt><dd>캔버스 끌기 · 가장자리 자동 이동</dd></div>
+              <div><dt>선택 크기</dt><dd>선택 영역의 상하좌우 경계 끌기</dd></div>
               <div><dt>선택 이동</dt><dd>선택 영역 끌기</dd></div>
               <div><dt>실행 취소</dt><dd><kbd>Ctrl</kbd> + <kbd>Z</kbd></dd></div>
               <div><dt>다시 실행</dt><dd><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Z</kbd></dd></div>

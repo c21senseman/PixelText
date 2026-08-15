@@ -80,7 +80,7 @@ class Transaction {
 }
 
 export type EditorListener = () => void;
-export type SelectionResizeEdge = "left" | "right";
+export type SelectionResizeEdge = "left" | "right" | "top" | "bottom";
 
 export class EditorModel {
   document: SparseDocument;
@@ -603,7 +603,7 @@ export class EditorModel {
   }
 
   resizeSelectionHorizontal(
-    edge: SelectionResizeEdge,
+    edge: "left" | "right",
     boundaryX: number,
   ): void {
     const selection = this.selection;
@@ -614,6 +614,13 @@ export class EditorModel {
     const targetX2 = edge === "right" ? boundaryX : selection.x2;
     if (targetX2 <= targetX1) {
       throw new EditorError("선택 영역의 너비는 한 칸 이상이어야 합니다.");
+    }
+
+    if (edge === "left") {
+      if (boundaryX === selection.x1) return;
+      this.selection = { ...selection, x1: boundaryX };
+      this.emit();
+      return;
     }
 
     const sourceWidth = safeAdd(selection.x2, -selection.x1);
@@ -694,6 +701,29 @@ export class EditorModel {
     }
 
     this.commit(transaction, before, { x: target.x1, y: target.y1 }, target);
+  }
+
+  resizeSelectionVertical(
+    edge: "top" | "bottom",
+    boundaryY: number,
+  ): void {
+    const selection = this.selection;
+    if (!selection) return;
+    assertSafePosition({ x: selection.x1, y: boundaryY });
+
+    const targetY1 = edge === "top" ? boundaryY : selection.y1;
+    const targetY2 = edge === "bottom" ? boundaryY : selection.y2;
+    if (targetY2 <= targetY1) {
+      throw new EditorError("선택 영역의 높이는 한 칸 이상이어야 합니다.");
+    }
+    if (targetY1 === selection.y1 && targetY2 === selection.y2) return;
+
+    this.selection = {
+      ...selection,
+      y1: targetY1,
+      y2: targetY2,
+    };
+    this.emit();
   }
 
   copySelection(): string {

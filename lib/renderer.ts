@@ -285,8 +285,12 @@ function drawSelection(
   if (!resizable) return;
   const top = start.y;
   const bottom = start.y + height;
+  const left = start.x;
+  const right = start.x + width;
+  const centerX = (left + right) / 2;
   const centerY = (top + bottom) / 2;
   const handleHeight = Math.min(22, Math.max(10, height * 0.55));
+  const handleWidth = Math.min(22, Math.max(10, width * 0.55));
   const edgeXs: number[] = [];
   if (selection.x1 >= visible.x1 && selection.x1 <= visible.x2) {
     edgeXs.push(logicalToScreen(
@@ -318,6 +322,40 @@ function drawSelection(
       centerY - handleHeight / 2 + 0.5,
       4,
       handleHeight - 1,
+    );
+  }
+
+  const edgeYs: number[] = [];
+  if (selection.y1 >= visible.y1 && selection.y1 <= visible.y2) {
+    edgeYs.push(logicalToScreen(
+      { x: clipped.x1, y: selection.y1 },
+      camera,
+      viewport,
+    ).y);
+  }
+  if (selection.y2 >= visible.y1 && selection.y2 <= visible.y2) {
+    edgeYs.push(logicalToScreen(
+      { x: clipped.x1, y: selection.y2 },
+      camera,
+      viewport,
+    ).y);
+  }
+  for (const edgeY of edgeYs) {
+    context.strokeStyle = "rgba(77, 91, 229, 0.92)";
+    context.lineWidth = 2;
+    context.beginPath();
+    context.moveTo(left + 1, edgeY);
+    context.lineTo(right - 1, edgeY);
+    context.stroke();
+    context.fillStyle = "#ffffff";
+    context.fillRect(centerX - handleWidth / 2, edgeY - 2.5, handleWidth, 5);
+    context.strokeStyle = "#5261e6";
+    context.lineWidth = 1;
+    context.strokeRect(
+      centerX - handleWidth / 2 + 0.5,
+      edgeY - 2,
+      handleWidth - 1,
+      4,
     );
   }
 }

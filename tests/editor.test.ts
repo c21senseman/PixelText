@@ -406,27 +406,47 @@ test("horizontal selection shrink preserves existing line breaks", () => {
   assert.deepEqual(editor.selection, { x1: 0, y1: 0, x2: 3, y2: 6 });
 });
 
-test("left selection edge stays anchored on the right while reflowing", () => {
+test("left selection edge changes bounds without moving text", () => {
   const editor = new EditorModel();
   editor.setCursor({ x: 4, y: 2 });
   editor.insertText("ABCDEF");
   editor.setSelection({ x1: 4, y1: 2, x2: 10, y2: 3 });
 
   editor.resizeSelectionHorizontal("left", 7);
-  assert.deepEqual(editor.selection, { x1: 7, y1: 2, x2: 10, y2: 4 });
-  assert.equal(editor.document.getCell(4, 2), null);
-  assert.equal(editor.document.getCell(7, 2), "A");
-  assert.equal(editor.document.getCell(9, 2), "C");
-  assert.equal(editor.document.getCell(7, 3), "D");
-  assert.equal(editor.document.getCell(9, 3), "F");
+  assert.deepEqual(editor.selection, { x1: 7, y1: 2, x2: 10, y2: 3 });
+  assert.equal(editor.document.getCell(4, 2), "A");
+  assert.equal(editor.document.getCell(7, 2), "D");
+  assert.equal(editor.document.getCell(9, 2), "F");
+  assert.equal(editor.document.getCell(7, 3), null);
 
   editor.resizeSelectionHorizontal("left", 4);
-  assert.deepEqual(editor.selection, { x1: 4, y1: 2, x2: 10, y2: 4 });
-  assert.equal(editor.document.getCell(4, 2), null);
-  assert.equal(editor.document.getCell(7, 2), "A");
-  assert.equal(editor.document.getCell(9, 2), "C");
-  assert.equal(editor.document.getCell(7, 3), "D");
-  assert.equal(editor.document.getCell(9, 3), "F");
+  assert.deepEqual(editor.selection, { x1: 4, y1: 2, x2: 10, y2: 3 });
+  assert.equal(editor.document.getCell(4, 2), "A");
+  assert.equal(editor.document.getCell(9, 2), "F");
+});
+
+test("top and bottom selection edges change bounds without moving text", () => {
+  const editor = new EditorModel();
+  editor.document.setCell(2, 1, "A");
+  editor.document.setCell(2, 2, "B");
+  editor.document.setCell(2, 3, "C");
+  editor.setSelection({ x1: 2, y1: 1, x2: 3, y2: 4 });
+
+  editor.resizeSelectionVertical("top", 2);
+  assert.deepEqual(editor.selection, { x1: 2, y1: 2, x2: 3, y2: 4 });
+  assert.equal(editor.document.getCell(2, 1), "A");
+  assert.equal(editor.document.getCell(2, 2), "B");
+
+  editor.resizeSelectionVertical("bottom", 3);
+  assert.deepEqual(editor.selection, { x1: 2, y1: 2, x2: 3, y2: 3 });
+  assert.equal(editor.document.getCell(2, 3), "C");
+
+  editor.resizeSelectionVertical("top", 0);
+  editor.resizeSelectionVertical("bottom", 5);
+  assert.deepEqual(editor.selection, { x1: 2, y1: 0, x2: 3, y2: 5 });
+  assert.equal(editor.document.getCell(2, 1), "A");
+  assert.equal(editor.document.getCell(2, 2), "B");
+  assert.equal(editor.document.getCell(2, 3), "C");
 });
 
 test("horizontal selection resize rejects a zero-width target", () => {
