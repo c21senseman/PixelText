@@ -1,7 +1,10 @@
 export const CHUNK_SIZE = 64;
 export const CHUNK_CELL_COUNT = CHUNK_SIZE * CHUNK_SIZE;
-export const MIN_ZOOM = 0.25;
+export const MIN_ZOOM = 0.05;
 export const MAX_ZOOM = 4;
+
+const SELECTION_AUTO_PAN_EDGE_PX = 56;
+const SELECTION_AUTO_PAN_SPEED_PX = 600;
 
 export const MAX_TEXT_WIDTH = 100_000;
 export const MAX_TEXT_HEIGHT = 100_000;
@@ -117,6 +120,32 @@ export function selectionFromCursorDrag(
     x2: x1 === maxX ? maxX + 1 : maxX,
     y2: maxY + 1,
   };
+}
+
+export function selectionAutoPanVelocity(
+  pointerCoordinate: number,
+  viewportSize: number,
+): number {
+  if (!Number.isFinite(pointerCoordinate) || viewportSize <= 0) return 0;
+  const edgeSize = Math.max(
+    1,
+    Math.min(SELECTION_AUTO_PAN_EDGE_PX, viewportSize / 2),
+  );
+  if (pointerCoordinate < edgeSize) {
+    const intensity = Math.min(
+      1.5,
+      (edgeSize - pointerCoordinate) / edgeSize,
+    );
+    return -SELECTION_AUTO_PAN_SPEED_PX * intensity;
+  }
+  if (pointerCoordinate > viewportSize - edgeSize) {
+    const intensity = Math.min(
+      1.5,
+      (pointerCoordinate - (viewportSize - edgeSize)) / edgeSize,
+    );
+    return SELECTION_AUTO_PAN_SPEED_PX * intensity;
+  }
+  return 0;
 }
 
 export function cloneSelection(selection: Selection | null): Selection | null {

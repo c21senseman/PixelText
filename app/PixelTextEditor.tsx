@@ -37,6 +37,7 @@ import {
   Position,
   Selection,
   isPointInSelection,
+  selectionAutoPanVelocity,
   selectionFromCursorDrag,
 } from "@/lib/types";
 
@@ -55,6 +56,9 @@ type DragState =
       pointerId: number;
       anchor: Position;
       moved: boolean;
+      clientX: number;
+      clientY: number;
+      autoPanned: boolean;
     }
   | {
       kind: "move";
@@ -128,6 +132,8 @@ export default function PixelTextEditor() {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const cameraRef = useRef<Camera>({ ...DEFAULT_CAMERA });
   const dragRef = useRef<DragState | null>(null);
+  const selectionAutoPanFrameRef = useRef<number | null>(null);
+  const selectionAutoPanLastTimeRef = useRef<number | null>(null);
   const minimapDraggingRef = useRef(false);
   const minimapTransformRef = useRef<MinimapTransform | null>(null);
   const composingRef = useRef(false);
@@ -293,6 +299,9 @@ export default function PixelTextEditor() {
       window.removeEventListener("pagehide", handlePageHide);
       if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
       if (frameRef.current !== null) window.cancelAnimationFrame(frameRef.current);
+      if (selectionAutoPanFrameRef.current !== null) {
+        window.cancelAnimationFrame(selectionAutoPanFrameRef.current);
+      }
     };
   }, []);
 
@@ -632,6 +641,82 @@ export default function PixelTextEditor() {
     return boundaryX;
   };
 
+  const stopSelectionAutoPan = () => {
+    if (selectionAutoPanFrameRef.current !== null) {
+      window.cancelAnimationFrame(selectionAutoPanFrameRef.current);
+      selectionAutoPanFrameRef.current = null;
+    }
+    selectionAutoPanLastTimeRef.current = null;
+  };
+
+  function selectionAutoPanStep(timestamp: number) {
+    selectionAutoPanFrameRef.current = null;
+    const drag = dragRef.current;
+    const canvas = canvasRef.current;
+    if (!canvas || drag?.kind !== "select") {
+      selectionAutoPanLastTimeRef.current = null;
+      return;
+    }
+
+    const rect = canvas.getBoundingClientRect();
+    const velocityX = selectionAutoPanVelocity(
+      drag.clientX - rect.left,
+      rect.width,
+    );
+    const velocityY = selectionAutoPanVelocity(
+      drag.clientY - rect.top,
+      rect.height,
+    );
+    if (velocityX === 0 && velocityY === 0) {
+      selectionAutoPanLastTimeRef.current = null;
+      return;
+    }
+
+    const previousTime = selectionAutoPanLastTimeRef.current;
+    const elapsedSeconds = Math.min(
+      0.05,
+      previousTime === null ? 1 / 60 : (timestamp - previousTime) / 1000,
+    );
+    selectionAutoPanLastTimeRef.current = timestamp;
+    const current = cameraRef.current;
+    const metrics = cellMetrics(current);
+    setCamera(
+      {
+        ...current,
+        x: current.x + (velocityX * elapsedSeconds) / metrics.width,
+        y: current.y + (velocityY * elapsedSeconds) / metrics.height,
+      },
+      false,
+    );
+    drag.autoPanned = true;
+
+    const focus = screenToCell(
+      drag.clientX - rect.left,
+      drag.clientY - rect.top,
+      cameraRef.current,
+      { width: rect.width, height: rect.height },
+    );
+    if (Number.isSafeInteger(focus.x) && Number.isSafeInteger(focus.y)) {
+      drag.moved =
+        drag.moved || focus.x !== drag.anchor.x || focus.y !== drag.anchor.y;
+      if (drag.moved) {
+        editor.setSelection(selectionFromCursorDrag(drag.anchor, focus));
+        editor.setCursor(focus, false);
+      }
+    }
+
+    selectionAutoPanFrameRef.current = window.requestAnimationFrame(
+      selectionAutoPanStep,
+    );
+  }
+
+  const ensureSelectionAutoPan = () => {
+    if (selectionAutoPanFrameRef.current !== null) return;
+    selectionAutoPanFrameRef.current = window.requestAnimationFrame(
+      selectionAutoPanStep,
+    );
+  };
+
   const handlePointerDown = (event: PointerEvent<HTMLCanvasElement>) => {
     if (event.button === 2) {
       event.preventDefault();
@@ -686,6 +771,9 @@ export default function PixelTextEditor() {
       pointerId: event.pointerId,
       anchor: cell,
       moved: false,
+      clientX: event.clientX,
+      clientY: event.clientY,
+      autoPanned: false,
     };
     editor.setCursor(cell);
   };
@@ -726,6 +814,9 @@ export default function PixelTextEditor() {
     const cell = pointerCell(event);
     if (!cell) return;
     if (drag.kind === "select") {
+      drag.clientX = event.clientX;
+      drag.clientY = event.clientY;
+      ensureSelectionAutoPan();
       drag.moved = drag.moved || cell.x !== drag.anchor.x || cell.y !== drag.anchor.y;
       if (!drag.moved) return;
       editor.setSelection(selectionFromCursorDrag(drag.anchor, cell));
@@ -740,6 +831,7 @@ export default function PixelTextEditor() {
   const handlePointerUp = (event: PointerEvent<HTMLCanvasElement>) => {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
+    stopSelectionAutoPan();
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
@@ -761,6 +853,7 @@ export default function PixelTextEditor() {
       editor.setSelection(null);
       editor.setCursor(drag.anchor);
     }
+    if (drag.kind === "select" && drag.autoPanned) scheduleSave();
     dragRef.current = null;
     setSelectionPreview(null);
     setSelectionResizePreview(null);
@@ -1069,9 +1162,10 @@ export default function PixelTextEditor() {
           onContextMenu={(event) => event.preventDefault()}
         />
         <p id="canvas-instructions" className="sr-only">
-          방향키로 커서를 이동하고, 마우스 끌기로 사각형을 선택합니다. 선택의
-          좌우 세로 경계를 끌면 폭과 자동 줄바꿈을 조절합니다. 마우스 오른쪽
-          버튼을 누른 채 끌면 화면을 이동하고 Ctrl과 휠로 확대합니다.
+          방향키로 커서를 이동하고, 마우스 끌기로 사각형을 선택합니다. 선택
+          중 화면 가장자리로 끌면 캔버스가 자동 이동합니다. 선택의 좌우 세로
+          경계를 끌면 폭과 자동 줄바꿈을 조절합니다. 마우스 오른쪽 버튼을 누른
+          채 끌면 화면을 이동하고 Ctrl과 휠로 확대합니다.
         </p>
         <textarea
           ref={textareaRef}
@@ -1284,7 +1378,7 @@ export default function PixelTextEditor() {
               <div><dt>화면 이동</dt><dd><kbd>우클릭</kbd> + 끌기</dd></div>
               <div><dt>확대 · 축소</dt><dd><kbd>Ctrl</kbd> + 휠</dd></div>
               <div><dt>미니맵 확대 · 축소</dt><dd>미니맵 위 <kbd>Ctrl</kbd> + 휠</dd></div>
-              <div><dt>사각형 선택</dt><dd>캔버스 끌기</dd></div>
+              <div><dt>사각형 선택</dt><dd>캔버스 끌기 · 가장자리 자동 이동</dd></div>
               <div><dt>선택 이동</dt><dd>선택 영역 끌기</dd></div>
               <div><dt>실행 취소</dt><dd><kbd>Ctrl</kbd> + <kbd>Z</kbd></dd></div>
               <div><dt>다시 실행</dt><dd><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Z</kbd></dd></div>

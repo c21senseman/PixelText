@@ -3,7 +3,11 @@ import test from "node:test";
 import { chunkAddress, SparseDocument } from "../lib/document";
 import { EditorModel } from "../lib/editor";
 import { exportJson, importJson } from "../lib/io";
-import { selectionFromCursorDrag } from "../lib/types";
+import {
+  MIN_ZOOM,
+  selectionAutoPanVelocity,
+  selectionFromCursorDrag,
+} from "../lib/types";
 
 test("negative coordinates use floor-based chunks", () => {
   assert.deepEqual(chunkAddress({ x: -1, y: -1 }), {
@@ -332,6 +336,15 @@ test("drag selection uses the same horizontal boundaries as the cursor", () => {
     selectionFromCursorDrag({ x: -2, y: 5 }, { x: -2, y: 5 }),
     null,
   );
+});
+
+test("selection auto-pan velocity follows viewport edges and outside drag", () => {
+  assert.equal(MIN_ZOOM, 0.05);
+  assert.equal(selectionAutoPanVelocity(400, 800), 0);
+  assert.ok(selectionAutoPanVelocity(20, 800) < 0);
+  assert.ok(selectionAutoPanVelocity(780, 800) > 0);
+  assert.equal(selectionAutoPanVelocity(-200, 800), -900);
+  assert.equal(selectionAutoPanVelocity(1000, 800), 900);
 });
 
 test("moving an overlapping rectangular selection uses a snapshot", () => {
