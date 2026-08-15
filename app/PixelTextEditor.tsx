@@ -120,8 +120,6 @@ export default function PixelTextEditor() {
   const dragRef = useRef<DragState | null>(null);
   const minimapDraggingRef = useRef(false);
   const minimapTransformRef = useRef<MinimapTransform | null>(null);
-  const spacePressedRef = useRef(false);
-  const pendingSpaceCountRef = useRef(0);
   const composingRef = useRef(false);
   const compositionRef = useRef("");
   const ignoreCompositionEndRef = useRef(false);
@@ -280,14 +278,9 @@ export default function PixelTextEditor() {
 
   useEffect(() => {
     const handlePageHide = () => void saveNowRef.current();
-    const handleKeyUp = (event: globalThis.KeyboardEvent) => {
-      if (event.code === "Space") spacePressedRef.current = false;
-    };
     window.addEventListener("pagehide", handlePageHide);
-    window.addEventListener("keyup", handleKeyUp);
     return () => {
       window.removeEventListener("pagehide", handlePageHide);
-      window.removeEventListener("keyup", handleKeyUp);
       if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
       if (frameRef.current !== null) window.cancelAnimationFrame(frameRef.current);
     };
@@ -414,10 +407,6 @@ export default function PixelTextEditor() {
       setExportOpen(false);
       return;
     }
-    if (event.code === "Space" && !commandKey && !event.altKey) {
-      spacePressedRef.current = true;
-      return;
-    }
     if (event.key === "Escape") {
       event.preventDefault();
       if (composingRef.current) cancelComposition();
@@ -468,25 +457,9 @@ export default function PixelTextEditor() {
     }
   };
 
-  const handleKeyUp = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.code !== "Space") return;
-    spacePressedRef.current = false;
-    if (pendingSpaceCountRef.current > 0) {
-      const count = pendingSpaceCountRef.current;
-      pendingSpaceCountRef.current = 0;
-      runAction(() => editor.insertText(" ".repeat(count)));
-      if (textareaRef.current) textareaRef.current.value = "";
-    }
-  };
-
   const handleBeforeInput = (event: FormEvent<HTMLTextAreaElement>) => {
     const inputEvent = event.nativeEvent as InputEvent;
     if (composingRef.current || inputEvent.isComposing) return;
-    if (inputEvent.inputType === "insertText" && inputEvent.data === " ") {
-      event.preventDefault();
-      pendingSpaceCountRef.current += 1;
-      return;
-    }
     if (inputEvent.inputType === "insertLineBreak") {
       event.preventDefault();
       runAction(() => editor.enter());
@@ -509,7 +482,6 @@ export default function PixelTextEditor() {
     const value = event.currentTarget.value || nativeEvent.data || "";
     event.currentTarget.value = "";
     if (!value) return;
-    if (pendingSpaceCountRef.current > 0 && value === " ") return;
     if (suppressInputRef.current && value === suppressInputRef.current) {
       suppressInputRef.current = "";
       return;
@@ -580,15 +552,11 @@ export default function PixelTextEditor() {
   };
 
   const handlePointerDown = (event: PointerEvent<HTMLCanvasElement>) => {
-    if (event.button !== 0) return;
-    finishCompositionBeforeCommand();
-    focusInput();
-    const cell = pointerCell(event);
-    if (!cell) return;
-    event.currentTarget.setPointerCapture(event.pointerId);
-
-    if (spacePressedRef.current) {
-      pendingSpaceCountRef.current = 0;
+    if (event.button === 1) {
+      event.preventDefault();
+      finishCompositionBeforeCommand();
+      focusInput();
+      event.currentTarget.setPointerCapture(event.pointerId);
       dragRef.current = {
         kind: "pan",
         pointerId: event.pointerId,
@@ -599,6 +567,13 @@ export default function PixelTextEditor() {
       event.currentTarget.classList.add("is-panning");
       return;
     }
+    if (event.button !== 0) return;
+    finishCompositionBeforeCommand();
+    focusInput();
+    const cell = pointerCell(event);
+    if (!cell) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+
     if (isPointInSelection(cell, editor.selection)) {
       dragRef.current = {
         kind: "move",
@@ -957,10 +932,11 @@ export default function PixelTextEditor() {
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
           onPointerCancel={handlePointerUp}
+          onAuxClick={(event) => event.preventDefault()}
           onContextMenu={(event) => event.preventDefault()}
         />
         <p id="canvas-instructions" className="sr-only">
-          방향키로 커서를 이동하고, 마우스 끌기로 사각형을 선택합니다. Space를
+          방향키로 커서를 이동하고, 마우스 끌기로 사각형을 선택합니다. 휠 버튼을
           누른 채 끌면 화면을 이동하고 Ctrl과 휠로 확대합니다.
         </p>
         <textarea
@@ -971,7 +947,6 @@ export default function PixelTextEditor() {
           autoCorrect="off"
           spellCheck={false}
           onKeyDown={handleKeyDown}
-          onKeyUp={handleKeyUp}
           onBeforeInput={handleBeforeInput}
           onInput={handleInput}
           onCompositionStart={handleCompositionStart}
@@ -996,7 +971,7 @@ export default function PixelTextEditor() {
             <div className="guide-keys">
               <span><kbd>Click</kbd> 커서 놓기</span>
               <span><kbd>Drag</kbd> 영역 선택</span>
-              <span><kbd>Space</kbd> + 끌기 이동</span>
+              <span><kbd>휠 클릭</kbd> + 끌기 이동</span>
               <span><kbd>Ctrl</kbd> + 휠 확대</span>
             </div>
           </div>
@@ -1172,7 +1147,7 @@ export default function PixelTextEditor() {
               </button>
             </div>
             <dl className="shortcut-list">
-              <div><dt>화면 이동</dt><dd><kbd>Space</kbd> + 끌기</dd></div>
+              <div><dt>화면 이동</dt><dd><kbd>휠 클릭</kbd> + 끌기</dd></div>
               <div><dt>확대 · 축소</dt><dd><kbd>Ctrl</kbd> + 휠</dd></div>
               <div><dt>미니맵 확대 · 축소</dt><dd>미니맵 위 <kbd>Ctrl</kbd> + 휠</dd></div>
               <div><dt>사각형 선택</dt><dd>캔버스 끌기</dd></div>
