@@ -801,36 +801,49 @@ export class EditorModel {
     const targetCenterY = BigInt(target.y1) + BigInt(target.y2) - 1n;
     const blockCenterX = BigInt(minX) + BigInt(maxX);
     const blockCenterY = BigInt(minY) + BigInt(maxY);
-    const x = blockCenterX > targetCenterX
-      ? 1
-      : blockCenterX < targetCenterX
-        ? -1
-        : 0;
-    const y = blockCenterY > targetCenterY
-      ? 1
-      : blockCenterY < targetCenterY
-        ? -1
-        : 0;
-    if (x !== 0 || y !== 0) return { x, y };
-
-    const candidates: Array<{ distance: bigint; step: Position }> = [
-      {
+    const candidates: Array<{ distance: bigint; step: Position }> = [];
+    if (blockCenterX > targetCenterX) {
+      candidates.push({
         distance: BigInt(target.x2) - BigInt(minX),
         step: { x: 1, y: 0 },
-      },
-      {
+      });
+    } else if (blockCenterX < targetCenterX) {
+      candidates.push({
         distance: BigInt(maxX) - BigInt(target.x1) + 1n,
         step: { x: -1, y: 0 },
-      },
-      {
+      });
+    }
+    if (blockCenterY > targetCenterY) {
+      candidates.push({
         distance: BigInt(target.y2) - BigInt(minY),
         step: { x: 0, y: 1 },
-      },
-      {
+      });
+    } else if (blockCenterY < targetCenterY) {
+      candidates.push({
         distance: BigInt(maxY) - BigInt(target.y1) + 1n,
         step: { x: 0, y: -1 },
-      },
-    ];
+      });
+    }
+    if (candidates.length === 0) {
+      candidates.push(
+        {
+          distance: BigInt(target.x2) - BigInt(minX),
+          step: { x: 1, y: 0 },
+        },
+        {
+          distance: BigInt(maxX) - BigInt(target.x1) + 1n,
+          step: { x: -1, y: 0 },
+        },
+        {
+          distance: BigInt(target.y2) - BigInt(minY),
+          step: { x: 0, y: 1 },
+        },
+        {
+          distance: BigInt(maxY) - BigInt(target.y1) + 1n,
+          step: { x: 0, y: -1 },
+        },
+      );
+    }
     candidates.sort((left, right) =>
       left.distance < right.distance
         ? -1

@@ -513,7 +513,7 @@ test("selection movement leaves non-target path blocks in place", () => {
   assert.equal(editor.document.getCell(7, 0), "T");
 });
 
-test("selection pushing follows target-to-block relative direction", () => {
+test("selection pushing follows the nearest cardinal relative direction", () => {
   const left = new EditorModel();
   left.document.setCell(5, 0, "S");
   left.insertText("ABC");
@@ -536,17 +536,30 @@ test("selection pushing follows target-to-block relative direction", () => {
     assert.equal(vertical.document.getCell(1, y + 4), value);
   }
 
-  const diagonal = new EditorModel();
-  diagonal.document.setCell(0, 0, "S");
-  diagonal.document.setCell(2, 2, "A");
-  diagonal.document.setCell(3, 2, "B");
-  diagonal.document.setCell(3, 3, "C");
-  diagonal.setSelection({ x1: 0, y1: 0, x2: 1, y2: 1 });
-  diagonal.moveSelection(2, 2);
-  assert.equal(diagonal.document.getCell(2, 2), "S");
-  assert.equal(diagonal.document.getCell(3, 3), "A");
-  assert.equal(diagonal.document.getCell(4, 3), "B");
-  assert.equal(diagonal.document.getCell(4, 4), "C");
+  const horizontalTie = new EditorModel();
+  horizontalTie.document.setCell(0, 0, "S");
+  horizontalTie.document.setCell(2, 2, "A");
+  horizontalTie.document.setCell(3, 2, "B");
+  horizontalTie.document.setCell(3, 3, "C");
+  horizontalTie.setSelection({ x1: 0, y1: 0, x2: 1, y2: 1 });
+  horizontalTie.moveSelection(2, 2);
+  assert.equal(horizontalTie.document.getCell(2, 2), "S");
+  assert.equal(horizontalTie.document.getCell(3, 2), "A");
+  assert.equal(horizontalTie.document.getCell(4, 2), "B");
+  assert.equal(horizontalTie.document.getCell(4, 3), "C");
+
+  const verticalNearest = new EditorModel();
+  verticalNearest.document.setCell(0, 0, "S");
+  for (const [offset, value] of [..."ABCDE"].entries()) {
+    verticalNearest.document.setCell(offset + 1, 2, value);
+  }
+  verticalNearest.document.setCell(5, 3, "F");
+  verticalNearest.setSelection({ x1: 0, y1: 0, x2: 1, y2: 1 });
+  verticalNearest.moveSelection(2, 2);
+  assert.equal(verticalNearest.document.getCell(2, 2), "S");
+  assert.equal(verticalNearest.document.getCell(1, 3), "A");
+  assert.equal(verticalNearest.document.getCell(5, 3), "E");
+  assert.equal(verticalNearest.document.getCell(5, 4), "F");
 });
 
 test("centered overlap uses the shortest exit direction", () => {
