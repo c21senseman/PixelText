@@ -180,6 +180,17 @@ export function drawEditorCanvas(
       "rgba(77, 91, 229, 0.7)",
       true,
     );
+    if (options.selectionPreview) {
+      drawSelectionTextPreview(
+        context,
+        options.document,
+        options.selection,
+        options.selectionPreview,
+        options.camera,
+        viewport,
+        visible,
+      );
+    }
   }
 
   const cursorScreen = logicalToScreen(options.cursor, options.camera, viewport);
@@ -288,6 +299,53 @@ export function drawEditorCanvas(
     options.camera,
     viewport,
     visible,
+  );
+}
+
+function drawSelectionTextPreview(
+  context: CanvasRenderingContext2D,
+  document: SparseDocument,
+  selection: Selection,
+  preview: SelectionPreview,
+  camera: Camera,
+  viewport: Viewport,
+  visible: Selection,
+): void {
+  if (preview.dx === 0 && preview.dy === 0) return;
+
+  const source = {
+    x1: Math.max(selection.x1, visible.x1 - preview.dx),
+    y1: Math.max(selection.y1, visible.y1 - preview.dy),
+    x2: Math.min(selection.x2, visible.x2 - preview.dx),
+    y2: Math.min(selection.y2, visible.y2 - preview.dy),
+  };
+  if (source.x2 <= source.x1 || source.y2 <= source.y1) return;
+
+  const metrics = cellMetrics(camera);
+  document.forEachInRect(
+    source.x1,
+    source.y1,
+    source.x2,
+    source.y2,
+    (x, y, value) => {
+      const screen = logicalToScreen(
+        { x: x + preview.dx, y: y + preview.dy },
+        camera,
+        viewport,
+      );
+      context.save();
+      context.beginPath();
+      context.rect(screen.x, screen.y, metrics.width, metrics.height);
+      context.clip();
+      context.fillStyle = "rgba(49, 62, 199, 0.94)";
+      context.fillText(
+        value,
+        screen.x + metrics.width / 2,
+        screen.y + metrics.height * 0.53,
+        metrics.width * 0.96,
+      );
+      context.restore();
+    },
   );
 }
 

@@ -109,6 +109,77 @@ test("the canvas renders a visible bookmark marker and name", () => {
   assert.deepEqual(drawnText, ["시작"]);
 });
 
+test("selection drag renders selected text at the preview offset", () => {
+  const drawnText: Array<{ value: string; x: number; y: number }> = [];
+  const context = {
+    beginPath() {},
+    clearRect() {},
+    clip() {},
+    closePath() {},
+    fill() {},
+    fillRect() {},
+    fillText(value: string, x: number, y: number) {
+      drawnText.push({ value, x, y });
+    },
+    lineTo() {},
+    measureText(value: string) {
+      return { width: value.length * 8 };
+    },
+    moveTo() {},
+    quadraticCurveTo() {},
+    rect() {},
+    restore() {},
+    save() {},
+    setTransform() {},
+    stroke() {},
+    strokeRect() {},
+  } as unknown as CanvasRenderingContext2D;
+  const canvas = {
+    width: 0,
+    height: 0,
+    getContext: () => context,
+    getBoundingClientRect: () => ({ width: 400, height: 300 }),
+  } as unknown as HTMLCanvasElement;
+  const document = new SparseDocument();
+  document.setCell(0, 0, "A");
+  document.setCell(3, 0, "B");
+  const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { devicePixelRatio: 1 },
+  });
+
+  try {
+    drawEditorCanvas(canvas, {
+      document,
+      bookmarks: [],
+      camera: { x: 0, y: 0, zoom: 1 },
+      cursor: { x: 1_000, y: 1_000 },
+      overwriteMode: false,
+      selection: { x1: 0, y1: 0, x2: 1, y2: 1 },
+      composition: "",
+      searchResults: [],
+      activeSearchIndex: -1,
+      searchLength: 0,
+      selectionPreview: { dx: 2, dy: 1 },
+    });
+  } finally {
+    if (windowDescriptor) {
+      Object.defineProperty(globalThis, "window", windowDescriptor);
+    } else {
+      Reflect.deleteProperty(globalThis, "window");
+    }
+  }
+
+  const original = drawnText.find(({ value }) => value === "A");
+  assert.ok(original);
+  assert.deepEqual(drawnText.filter(({ value }) => value === "A"), [
+    original,
+    { value: "A", x: original.x + 40, y: original.y + 24 },
+  ]);
+  assert.equal(drawnText.filter(({ value }) => value === "B").length, 1);
+});
+
 test("spaces are empty cells and only one-cell gaps between text are spaces", () => {
   const document = new SparseDocument();
   document.setCell(-1, 4, " ");
