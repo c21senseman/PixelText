@@ -3,6 +3,7 @@ import test from "node:test";
 import { chunkAddress, SparseDocument } from "../lib/document";
 import { EditorModel } from "../lib/editor";
 import { exportJson, importJson } from "../lib/io";
+import { selectionFromCursorDrag } from "../lib/types";
 
 test("negative coordinates use floor-based chunks", () => {
   assert.deepEqual(chunkAddress({ x: -1, y: -1 }), {
@@ -312,6 +313,25 @@ test("arrow keys clear a rectangular selection and move from the current cursor"
   editor.moveCursor(0, -1);
   assert.deepEqual(editor.cursor, { x: 5, y: 2 });
   assert.equal(editor.selection, null);
+});
+
+test("drag selection uses the same horizontal boundaries as the cursor", () => {
+  assert.deepEqual(
+    selectionFromCursorDrag({ x: 0, y: 2 }, { x: 1, y: 2 }),
+    { x1: 0, y1: 2, x2: 1, y2: 3 },
+  );
+  assert.deepEqual(
+    selectionFromCursorDrag({ x: 3, y: 2 }, { x: 0, y: 2 }),
+    { x1: 0, y1: 2, x2: 3, y2: 3 },
+  );
+  assert.deepEqual(
+    selectionFromCursorDrag({ x: 4, y: 1 }, { x: 4, y: 3 }),
+    { x1: 4, y1: 1, x2: 5, y2: 4 },
+  );
+  assert.equal(
+    selectionFromCursorDrag({ x: -2, y: 5 }, { x: -2, y: 5 }),
+    null,
+  );
 });
 
 test("moving an overlapping rectangular selection uses a snapshot", () => {

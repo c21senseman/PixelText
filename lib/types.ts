@@ -93,6 +93,32 @@ export function normalizeSelection(selection: Selection): Selection {
   };
 }
 
+export function selectionFromCursorDrag(
+  anchor: Position,
+  focus: Position,
+): Selection | null {
+  assertSafePosition(anchor);
+  assertSafePosition(focus);
+  if (anchor.x === focus.x && anchor.y === focus.y) return null;
+
+  const x1 = Math.min(anchor.x, focus.x);
+  const maxX = Math.max(anchor.x, focus.x);
+  const maxY = Math.max(anchor.y, focus.y);
+  if (
+    maxY === Number.MAX_SAFE_INTEGER ||
+    (x1 === maxX && maxX === Number.MAX_SAFE_INTEGER)
+  ) {
+    return null;
+  }
+
+  return {
+    x1,
+    y1: Math.min(anchor.y, focus.y),
+    x2: x1 === maxX ? maxX + 1 : maxX,
+    y2: maxY + 1,
+  };
+}
+
 export function cloneSelection(selection: Selection | null): Selection | null {
   return selection ? { ...selection } : null;
 }
@@ -125,4 +151,3 @@ export function assertTextRasterSize(width: number, height: number): void {
     );
   }
 }
-

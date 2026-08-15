@@ -35,9 +35,8 @@ import {
   MAX_ZOOM,
   MIN_ZOOM,
   Position,
-  Selection,
   isPointInSelection,
-  normalizeSelection,
+  selectionFromCursorDrag,
 } from "@/lib/types";
 
 type SaveState = "loading" | "pending" | "saving" | "saved" | "error";
@@ -637,19 +636,8 @@ export default function PixelTextEditor() {
     if (drag.kind === "select") {
       drag.moved = drag.moved || cell.x !== drag.anchor.x || cell.y !== drag.anchor.y;
       if (!drag.moved) return;
-      const selection: Selection = normalizeSelection({
-        x1: Math.min(drag.anchor.x, cell.x),
-        y1: Math.min(drag.anchor.y, cell.y),
-        x2: Math.max(drag.anchor.x, cell.x) + 1,
-        y2: Math.max(drag.anchor.y, cell.y) + 1,
-      });
-      if (
-        Number.isSafeInteger(selection.x2) &&
-        Number.isSafeInteger(selection.y2)
-      ) {
-        editor.setSelection(selection);
-        editor.setCursor(cell, false);
-      }
+      editor.setSelection(selectionFromCursorDrag(drag.anchor, cell));
+      editor.setCursor(cell, false);
       return;
     }
     drag.dx = cell.x - drag.start.x;
