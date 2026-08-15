@@ -29,54 +29,6 @@ function snapshotState(
   return { cursor: { ...cursor }, selection: cloneSelection(selection) };
 }
 
-function* selectionMovementSteps(
-  dx: number,
-  dy: number,
-): Generator<Position> {
-  const distanceX = Math.abs(dx);
-  const distanceY = Math.abs(dy);
-  const directionX = Math.sign(dx);
-  const directionY = Math.sign(dy);
-  let x = 0;
-  let y = 0;
-  let error = distanceX - distanceY;
-
-  while (x !== dx || y !== dy) {
-    const previousX = x;
-    const previousY = y;
-    const doubledError = error * 2;
-    if (doubledError > -distanceY) {
-      error -= distanceY;
-      x += directionX;
-    }
-    if (doubledError < distanceX) {
-      error += distanceX;
-      y += directionY;
-    }
-    yield { x: x - previousX, y: y - previousY };
-  }
-}
-
-function selectionLeadingEdge(
-  selection: Selection,
-  step: Position,
-): Position[] {
-  const positions = new Map<string, Position>();
-  const add = (position: Position) => {
-    positions.set(coordinateKey(position.x, position.y), position);
-  };
-
-  if (step.x !== 0) {
-    const x = step.x > 0 ? selection.x2 - 1 : selection.x1;
-    for (let y = selection.y1; y < selection.y2; y += 1) add({ x, y });
-  }
-  if (step.y !== 0) {
-    const y = step.y > 0 ? selection.y2 - 1 : selection.y1;
-    for (let x = selection.x1; x < selection.x2; x += 1) add({ x, y });
-  }
-  return Array.from(positions.values());
-}
-
 class Transaction {
   private readonly changes = new Map<string, Change>();
 
@@ -830,72 +782,132 @@ export class EditorModel {
     return destinations;
   }
 
-  private pushTextBlockOutOfPath(
+  private textBlockPushDirection(
+    target: Selection,
+    block: ReadonlyMap<string, { x: number; y: number; value: string }>,
+  ): Position {
+    let minX = Number.MAX_SAFE_INTEGER;
+    let minY = Number.MAX_SAFE_INTEGER;
+    let maxX = Number.MIN_SAFE_INTEGER;
+    let maxY = Number.MIN_SAFE_INTEGER;
+    for (const cell of block.values()) {
+      minX = Math.min(minX, cell.x);
+      minY = Math.min(minY, cell.y);
+      maxX = Math.max(maxX, cell.x);
+      maxY = Math.max(maxY, cell.y);
+    }
+
+    const targetCenterX = BigInt(target.x1) + BigInt(target.x2) - 1n;
+    const targetCenterY = BigInt(target.y1) + BigInt(target.y2) - 1n;
+    const blockCenterX = BigInt(minX) + BigInt(maxX);
+    const blockCenterY = BigInt(minY) + BigInt(maxY);
+    const x = blockCenterX > targetCenterX
+      ? 1
+      : blockCenterX < targetCenterX
+        ? -1
+        : 0;
+    const y = blockCenterY > targetCenterY
+      ? 1
+      : blockCenterY < targetCenterY
+        ? -1
+        : 0;
+    if (x !== 0 || y !== 0) return { x, y };
+
+    const candidates: Array<{ distance: bigint; step: Position }> = [
+      {
+        distance: BigInt(target.x2) - BigInt(minX),
+        step: { x: 1, y: 0 },
+      },
+      {
+        distance: BigInt(maxX) - BigInt(target.x1) + 1n,
+        step: { x: -1, y: 0 },
+      },
+      {
+        distance: BigInt(target.y2) - BigInt(minY),
+        step: { x: 0, y: 1 },
+      },
+      {
+        distance: BigInt(maxY) - BigInt(target.y1) + 1n,
+        step: { x: 0, y: -1 },
+      },
+    ];
+    candidates.sort((left, right) =>
+      left.distance < right.distance
+        ? -1
+        : left.distance > right.distance
+          ? 1
+          : 0,
+    );
+    return candidates[0].step;
+  }
+
+  private pushTextBlockOutOfTarget(
     transaction: Transaction,
     start: Position,
     step: Position,
-    clearedPath: ReadonlySet<string>,
+    target: Selection,
+    clearedSource: ReadonlySet<string>,
   ): void {
-    const pending = [start];
-    for (let index = 0; index < pending.length; index += 1) {
-      const position = pending[index];
-      if (transaction.get(position.x, position.y) === null) continue;
+    let position = start;
+    while (transaction.get(position.x, position.y) !== null) {
       const destinations = this.shiftTextBlockOneStep(
         transaction,
         position,
         step,
-        clearedPath,
+        clearedSource,
       );
-      for (const destination of destinations) {
-        if (clearedPath.has(coordinateKey(destination.x, destination.y))) {
-          pending.push(destination);
-        }
-      }
+      const overlap = destinations.find(
+        (destination) =>
+          destination.x >= target.x1 &&
+          destination.x < target.x2 &&
+          destination.y >= target.y1 &&
+          destination.y < target.y2,
+      );
+      if (!overlap) return;
+      position = overlap;
     }
   }
 
-  private pushTextAlongSelectionPath(
+  private pushTextOverlappingTarget(
     transaction: Transaction,
     selection: Selection,
-    dx: number,
-    dy: number,
+    target: Selection,
   ): void {
     const width = safeAdd(selection.x2, -selection.x1);
     const height = safeAdd(selection.y2, -selection.y1);
-    assertTextRasterSize(
-      safeAdd(width, Math.abs(dx)),
-      safeAdd(height, Math.abs(dy)),
-    );
+    assertTextRasterSize(width, height);
 
-    const clearedPath = new Set<string>();
+    const clearedSource = new Set<string>();
     for (let y = selection.y1; y < selection.y2; y += 1) {
       for (let x = selection.x1; x < selection.x2; x += 1) {
-        clearedPath.add(coordinateKey(x, y));
+        clearedSource.add(coordinateKey(x, y));
       }
     }
 
-    let current = { ...selection };
-    for (const step of selectionMovementSteps(dx, dy)) {
-      current = {
-        x1: safeAdd(current.x1, step.x),
-        y1: safeAdd(current.y1, step.y),
-        x2: safeAdd(current.x2, step.x),
-        y2: safeAdd(current.y2, step.y),
-      };
-      const leadingEdge = selectionLeadingEdge(current, step);
-      for (const position of leadingEdge) {
-        clearedPath.add(coordinateKey(position.x, position.y));
-      }
-      for (const position of leadingEdge) {
-        while (transaction.get(position.x, position.y) !== null) {
-          this.pushTextBlockOutOfPath(
-            transaction,
-            position,
-            step,
-            clearedPath,
-          );
+    while (true) {
+      let overlap: Position | null = null;
+      for (let y = target.y1; y < target.y2 && !overlap; y += 1) {
+        for (let x = target.x1; x < target.x2; x += 1) {
+          if (transaction.get(x, y) !== null) {
+            overlap = { x, y };
+            break;
+          }
         }
       }
+      if (!overlap) return;
+      const block = this.collectTextBlock(
+        transaction,
+        overlap,
+        clearedSource,
+      );
+      const step = this.textBlockPushDirection(target, block);
+      this.pushTextBlockOutOfTarget(
+        transaction,
+        overlap,
+        step,
+        target,
+        clearedSource,
+      );
     }
   }
 
@@ -943,7 +955,7 @@ export class EditorModel {
       (x, y) => transaction.set(x, y, null),
     );
     if (!this.overwriteMode && targetHasExistingText) {
-      this.pushTextAlongSelectionPath(transaction, selection, dx, dy);
+      this.pushTextOverlappingTarget(transaction, selection, target);
     } else {
       this.document.forEachInRect(
         target.x1,
