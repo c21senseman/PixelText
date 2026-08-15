@@ -338,7 +338,7 @@ export class EditorModel {
     transaction.set(endX, y, null);
   }
 
-  private cursorAfterPreviousLine(
+  private joinCurrentLineToPrevious(
     transaction: Transaction,
     position: Position,
   ): Position | null {
@@ -363,7 +363,103 @@ export class EditorModel {
     while (transaction.isTextCell(x, previousY)) {
       x = safeAdd(x, 1);
     }
-    return { x, y: previousY };
+    const previousLineEnd = x;
+
+    if (transaction.get(position.x, position.y) === null) {
+      return { x: previousLineEnd, y: previousY };
+    }
+
+    let currentLineEnd = position.x;
+    while (
+      currentLineEnd < Number.MAX_SAFE_INTEGER &&
+      transaction.isTextCell(currentLineEnd + 1, position.y)
+    ) {
+      currentLineEnd += 1;
+    }
+
+    const queue: Position[] = [];
+    const visited = new Set<string>();
+    for (let currentX = position.x; currentX <= currentLineEnd; currentX += 1) {
+      const key = coordinateKey(currentX, position.y);
+      visited.add(key);
+      queue.push({ x: currentX, y: position.y });
+      if (currentX === Number.MAX_SAFE_INTEGER) break;
+    }
+
+    for (let index = 0; index < queue.length; index += 1) {
+      const current = queue[index];
+      for (let dy = -1; dy <= 1; dy += 1) {
+        for (let dx = -1; dx <= 1; dx += 1) {
+          if (dx === 0 && dy === 0) continue;
+          const neighborX = current.x + dx;
+          const neighborY = current.y + dy;
+          if (
+            !Number.isSafeInteger(neighborX) ||
+            !Number.isSafeInteger(neighborY)
+          ) {
+            continue;
+          }
+          const key = coordinateKey(neighborX, neighborY);
+          if (
+            visited.has(key) ||
+            !transaction.isTextCell(neighborX, neighborY)
+          ) {
+            continue;
+          }
+          visited.add(key);
+          queue.push({ x: neighborX, y: neighborY });
+        }
+      }
+    }
+
+    const moving: Array<{ from: Position; to: Position; value: string }> = [];
+    for (let currentX = position.x; currentX <= currentLineEnd; currentX += 1) {
+      const value = transaction.get(currentX, position.y);
+      if (value !== null) {
+        moving.push({
+          from: { x: currentX, y: position.y },
+          to: {
+            x: safeAdd(previousLineEnd, currentX - position.x),
+            y: previousY,
+          },
+          value,
+        });
+      }
+      if (currentX === Number.MAX_SAFE_INTEGER) break;
+    }
+    for (const current of queue) {
+      if (current.y <= position.y) continue;
+      const value = transaction.get(current.x, current.y);
+      if (value !== null) {
+        moving.push({
+          from: current,
+          to: { x: current.x, y: current.y - 1 },
+          value,
+        });
+      }
+    }
+
+    const sourceKeys = new Set(
+      moving.map((item) => coordinateKey(item.from.x, item.from.y)),
+    );
+    const destinationKeys = new Set<string>();
+    for (const item of moving) {
+      const destinationKey = coordinateKey(item.to.x, item.to.y);
+      if (
+        destinationKeys.has(destinationKey) ||
+        (transaction.get(item.to.x, item.to.y) !== null &&
+          !sourceKeys.has(destinationKey))
+      ) {
+        throw new EditorError(
+          "다른 문자 블록과 충돌하여 Backspace로 줄을 붙일 수 없습니다.",
+        );
+      }
+      destinationKeys.add(destinationKey);
+    }
+
+    for (const item of moving) transaction.set(item.from.x, item.from.y, null);
+    for (const item of moving) transaction.set(item.to.x, item.to.y, item.value);
+    return { x: previousLineEnd, y: previousY };
   }
 
   backspace(): void {
@@ -379,7 +475,7 @@ export class EditorModel {
       return;
     }
 
-    const previousLineCursor = this.cursorAfterPreviousLine(
+    const previousLineCursor = this.joinCurrentLineToPrevious(
       transaction,
       this.cursor,
     );

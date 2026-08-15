@@ -235,9 +235,76 @@ test("backspace at a line start returns the cursor to the previous line end", ()
 
   twoLines.backspace();
   assert.deepEqual(twoLines.cursor, { x: 4, y: 0 });
-  assert.equal(twoLines.document.getCell(0, 1), "ㄹ");
-  assert.equal(twoLines.document.getCell(2, 1), "ㅁ");
-  assert.equal(twoLines.document.getCell(3, 1), "ㅂ");
+  assert.equal(twoLines.document.getCell(4, 0), "ㄹ");
+  assert.equal(twoLines.document.getCell(5, 0), null);
+  assert.equal(twoLines.document.getTextCell(5, 0), " ");
+  assert.equal(twoLines.document.getCell(6, 0), "ㅁ");
+  assert.equal(twoLines.document.getCell(7, 0), "ㅂ");
+  assert.equal(twoLines.document.getCell(0, 1), null);
+  assert.equal(twoLines.document.getCell(2, 1), null);
+  assert.equal(twoLines.document.getCell(3, 1), null);
+});
+
+test("backspace joins a current line to the previous line", () => {
+  const editor = new EditorModel();
+  editor.insertText("abc");
+  editor.setCursor({ x: 0, y: 1 });
+  editor.insertText("def");
+  editor.setCursor({ x: 0, y: 1 });
+
+  editor.backspace();
+
+  for (const [x, value] of [..."abcdef"].entries()) {
+    assert.equal(editor.document.getCell(x, 0), value);
+    assert.equal(editor.document.getCell(x, 1), null);
+  }
+  assert.deepEqual(editor.cursor, { x: 3, y: 0 });
+
+  editor.undo();
+  for (const [x, value] of [..."abc"].entries()) {
+    assert.equal(editor.document.getCell(x, 0), value);
+  }
+  for (const [x, value] of [..."def"].entries()) {
+    assert.equal(editor.document.getCell(x, 1), value);
+  }
+  assert.deepEqual(editor.cursor, { x: 0, y: 1 });
+});
+
+test("backspace line join reverses Enter for its connected lower block", () => {
+  const editor = new EditorModel();
+  editor.insertText("abcdef");
+  editor.setCursor({ x: 0, y: 1 });
+  editor.insertText("hello");
+  editor.setCursor({ x: 3, y: 0 });
+  editor.enter();
+
+  editor.backspace();
+
+  for (const [x, value] of [..."abcdef"].entries()) {
+    assert.equal(editor.document.getCell(x, 0), value);
+  }
+  for (const [x, value] of [..."hello"].entries()) {
+    assert.equal(editor.document.getCell(x, 1), value);
+    assert.equal(editor.document.getCell(x, 2), null);
+  }
+  assert.deepEqual(editor.cursor, { x: 3, y: 0 });
+});
+
+test("backspace line join is rejected atomically on collision", () => {
+  const editor = new EditorModel();
+  editor.document.setCell(0, 0, "A");
+  editor.document.setCell(4, 0, "X");
+  editor.setCursor({ x: 0, y: 1 });
+  editor.insertText("BCDE");
+  editor.setCursor({ x: 0, y: 1 });
+
+  assert.throws(() => editor.backspace(), /충돌/);
+  assert.equal(editor.document.getCell(0, 0), "A");
+  assert.equal(editor.document.getCell(4, 0), "X");
+  for (const [x, value] of [..."BCDE"].entries()) {
+    assert.equal(editor.document.getCell(x, 1), value);
+  }
+  assert.deepEqual(editor.cursor, { x: 0, y: 1 });
 });
 
 test("selection deletion and undo restore cells, cursor, and selection", () => {
