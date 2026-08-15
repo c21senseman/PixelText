@@ -17,19 +17,29 @@ test("negative coordinates use floor-based chunks", () => {
   assert.equal(chunkAddress({ x: -65, y: 0 }).key, "-2,0");
 });
 
-test("spaces are stored and empty chunks are removed", () => {
+test("spaces are empty cells and only one-cell gaps between text are spaces", () => {
   const document = new SparseDocument();
   document.setCell(-1, 4, " ");
-  assert.equal(document.getCell(-1, 4), " ");
-  assert.equal(document.cellCount, 1);
-  assert.equal(document.chunkCount, 1);
-  document.deleteCell(-1, 4);
   assert.equal(document.getCell(-1, 4), null);
   assert.equal(document.cellCount, 0);
   assert.equal(document.chunkCount, 0);
+
+  document.setCell(-2, 4, "A");
+  document.setCell(0, 4, "B");
+  assert.equal(document.getCell(-1, 4), null);
+  assert.equal(document.getTextCell(-1, 4), " ");
+  assert.equal(document.isInterCharacterSpace(-1, 4), true);
+  assert.equal(document.cellCount, 3);
+  assert.equal(document.storedCellCount, 2);
+
+  document.setCell(1, 4, "C");
+  assert.equal(document.getTextCell(-1, 4), " ");
+  document.deleteCell(0, 4);
+  assert.equal(document.getTextCell(-1, 4), null);
+  assert.equal(document.cellCount, 2);
 });
 
-test("graphemes occupy one cell and insertion stops at the first gap", () => {
+test("graphemes occupy one cell and insertion preserves a one-cell text gap", () => {
   const editor = new EditorModel();
   editor.insertText("A👨‍👩‍👧‍👦");
   editor.document.setCell(3, 0, "Z");
@@ -39,11 +49,13 @@ test("graphemes occupy one cell and insertion stops at the first gap", () => {
   assert.equal(editor.document.getCell(0, 0), "A");
   assert.equal(editor.document.getCell(1, 0), "한");
   assert.equal(editor.document.getCell(2, 0), "👨‍👩‍👧‍👦");
-  assert.equal(editor.document.getCell(3, 0), "Z");
+  assert.equal(editor.document.getCell(3, 0), null);
+  assert.equal(editor.document.getTextCell(3, 0), " ");
+  assert.equal(editor.document.getCell(4, 0), "Z");
   assert.deepEqual(editor.cursor, { x: 2, y: 0 });
 });
 
-test("backspace and delete pull only the current continuous run", () => {
+test("backspace and delete pull through a one-cell text gap", () => {
   const editor = new EditorModel();
   editor.insertText("ABCD");
   editor.document.deleteCell(2, 0);
@@ -51,12 +63,70 @@ test("backspace and delete pull only the current continuous run", () => {
   editor.backspace();
   assert.equal(editor.document.getCell(0, 0), "A");
   assert.equal(editor.document.getCell(1, 0), null);
-  assert.equal(editor.document.getCell(3, 0), "D");
+  assert.equal(editor.document.getTextCell(1, 0), " ");
+  assert.equal(editor.document.getCell(2, 0), "D");
+  assert.equal(editor.document.getCell(3, 0), null);
   assert.deepEqual(editor.cursor, { x: 1, y: 0 });
 
-  editor.setCursor({ x: 3, y: 0 });
+  editor.setCursor({ x: 2, y: 0 });
   editor.deleteForward();
+  assert.equal(editor.document.getCell(2, 0), null);
+});
+
+test("typed spaces create blanks, keep one separator, and reject repeats", () => {
+  const blankEditor = new EditorModel();
+  blankEditor.insertText("  ");
+  assert.equal(blankEditor.document.cellCount, 0);
+  assert.equal(blankEditor.document.chunkCount, 0);
+  assert.deepEqual(blankEditor.cursor, { x: 1, y: 0 });
+
+  const editor = new EditorModel();
+  editor.insertText("A");
+  editor.insertText(" ");
+
+  assert.equal(editor.document.getCell(1, 0), null);
+  assert.equal(editor.document.cellCount, 1);
+  assert.deepEqual(editor.cursor, { x: 2, y: 0 });
+
+  editor.insertText(" ");
+  assert.deepEqual(editor.cursor, { x: 2, y: 0 });
+
+  editor.insertText("B");
+  assert.equal(editor.document.getCell(2, 0), "B");
+  assert.equal(editor.document.getTextCell(1, 0), " ");
+  assert.equal(editor.document.cellCount, 3);
+  assert.deepEqual(editor.search("A B"), [{ x: 0, y: 0 }]);
+  assert.deepEqual(editor.search("A  B"), []);
+});
+
+test("pasted repeated spaces are reduced to one empty separator cell", () => {
+  const editor = new EditorModel();
+  editor.insertText("A  B");
+
+  assert.equal(editor.document.getCell(0, 0), "A");
+  assert.equal(editor.document.getCell(1, 0), null);
+  assert.equal(editor.document.getCell(2, 0), "B");
   assert.equal(editor.document.getCell(3, 0), null);
+  assert.equal(editor.document.cellCount, 3);
+  assert.deepEqual(editor.cursor, { x: 3, y: 0 });
+});
+
+test("editing an existing separator never creates a double space", () => {
+  const editor = new EditorModel();
+  editor.insertText("A B C");
+  editor.setCursor({ x: 2, y: 0 });
+  editor.deleteForward();
+
+  assert.equal(editor.document.getCell(0, 0), "A");
+  assert.equal(editor.document.getTextCell(1, 0), " ");
+  assert.equal(editor.document.getCell(2, 0), "C");
+  assert.equal(editor.document.getCell(3, 0), null);
+  assert.deepEqual(editor.search("A C"), [{ x: 0, y: 0 }]);
+
+  editor.setCursor({ x: 1, y: 0 });
+  editor.insertText(" ");
+  assert.deepEqual(editor.cursor, { x: 2, y: 0 });
+  assert.deepEqual(editor.search("A C"), [{ x: 0, y: 0 }]);
 });
 
 test("multiline paste inserts each row independently", () => {
@@ -135,10 +205,9 @@ test("moving an overlapping rectangular selection uses a snapshot", () => {
   assert.deepEqual(editor.selection, { x1: 1, y1: 0, x2: 4, y2: 1 });
 });
 
-test("copy preserves empty cells as spaces and search includes real spaces", () => {
+test("copy preserves empty cells and search includes one-cell separators", () => {
   const editor = new EditorModel();
   editor.document.setCell(0, 0, "A");
-  editor.document.setCell(1, 0, " ");
   editor.document.setCell(2, 0, "B");
   editor.document.setCell(0, 1, "C");
   editor.setSelection({ x1: 0, y1: 0, x2: 3, y2: 2 });
@@ -165,4 +234,24 @@ test("JSON export is deterministic and import validates atomically", () => {
 
   parsed.chunks[0].cells.push(parsed.chunks[0].cells[0]);
   assert.throws(() => importJson(JSON.stringify(parsed)), /중복/);
+});
+
+test("legacy JSON space cells load as empty cells", () => {
+  const raw = JSON.stringify({
+    version: 1,
+    chunkSize: 64,
+    chunks: [{ x: 0, y: 0, cells: [[0, "A"], [1, " "], [2, "B"]] }],
+    bookmarks: [],
+    camera: { x: 0, y: 0, zoom: 1 },
+  });
+  const imported = importJson(raw);
+
+  assert.equal(imported.document.getCell(1, 0), null);
+  assert.equal(imported.document.getTextCell(1, 0), " ");
+  assert.equal(imported.document.cellCount, 3);
+  assert.equal(imported.document.storedCellCount, 2);
+  assert.doesNotMatch(
+    exportJson(imported.document, [], { x: 0, y: 0, zoom: 1 }),
+    /\[\s*1,\s*" "\s*\]/u,
+  );
 });

@@ -42,18 +42,34 @@ class Transaction {
 
   set(x: number, y: number, after: string | null): void {
     assertSafePosition({ x, y });
+    const nextValue = after === " " ? null : after;
     const key = coordinateKey(x, y);
     const existing = this.changes.get(key);
     if (existing) {
-      existing.after = after;
+      existing.after = nextValue;
       return;
     }
     this.changes.set(key, {
       x,
       y,
       before: this.document.getCell(x, y),
-      after,
+      after: nextValue,
     });
+  }
+
+  isInterCharacterSpace(x: number, y: number): boolean {
+    assertSafePosition({ x, y });
+    return (
+      this.get(x, y) === null &&
+      x > Number.MIN_SAFE_INTEGER &&
+      x < Number.MAX_SAFE_INTEGER &&
+      this.get(x - 1, y) !== null &&
+      this.get(x + 1, y) !== null
+    );
+  }
+
+  isTextCell(x: number, y: number): boolean {
+    return this.get(x, y) !== null || this.isInterCharacterSpace(x, y);
   }
 
   finalChanges(): Change[] {
@@ -76,6 +92,7 @@ export class EditorModel {
   private undoStack: HistoryBatch[] = [];
   private redoStack: HistoryBatch[] = [];
   private readonly listeners = new Set<EditorListener>();
+  private lastInputWasSpace = false;
 
   constructor(document = new SparseDocument()) {
     this.document = document;
@@ -100,6 +117,7 @@ export class EditorModel {
 
   setCursor(position: Position, clearSelection = true): void {
     assertSafePosition(position);
+    this.lastInputWasSpace = false;
     this.cursor = { ...position };
     if (clearSelection) this.selection = null;
     this.emit();
@@ -113,6 +131,7 @@ export class EditorModel {
   }
 
   setSelection(selection: Selection | null): void {
+    this.lastInputWasSpace = false;
     if (!selection) {
       this.selection = null;
       this.emit();
@@ -176,13 +195,39 @@ export class EditorModel {
   ): Position {
     const nextCursor = { x: safeAdd(position.x, 1), y: position.y };
     let end = position.x;
-    while (transaction.get(end, position.y) !== null) {
+    while (transaction.isTextCell(end, position.y)) {
       end = safeAdd(end, 1);
     }
     for (let x = end; x > position.x; x -= 1) {
       transaction.set(x, position.y, transaction.get(x - 1, position.y));
     }
     transaction.set(position.x, position.y, grapheme);
+    return nextCursor;
+  }
+
+  private insertBlank(
+    transaction: Transaction,
+    position: Position,
+  ): Position {
+    if (transaction.isInterCharacterSpace(position.x, position.y)) {
+      return { x: safeAdd(position.x, 1), y: position.y };
+    }
+    if (
+      position.x > Number.MIN_SAFE_INTEGER &&
+      transaction.isInterCharacterSpace(position.x - 1, position.y)
+    ) {
+      return position;
+    }
+
+    const nextCursor = { x: safeAdd(position.x, 1), y: position.y };
+    let end = position.x;
+    while (transaction.isTextCell(end, position.y)) {
+      end = safeAdd(end, 1);
+    }
+    for (let x = end; x > position.x; x -= 1) {
+      transaction.set(x, position.y, transaction.get(x - 1, position.y));
+    }
+    transaction.set(position.x, position.y, null);
     return nextCursor;
   }
 
@@ -201,20 +246,58 @@ export class EditorModel {
     const selectionStart = this.clearSelectionInTransaction(transaction);
     const start = selectionStart ?? this.cursor;
     let finalCursor = { ...start };
+    let previousWasSpace = selectionStart ? false : this.lastInputWasSpace;
 
     for (let row = 0; row < segmentedLines.length; row += 1) {
       const y = safeAdd(start.y, row);
       let lineCursor: Position = { x: start.x, y };
+      if (row > 0) previousWasSpace = false;
       for (const grapheme of segmentedLines[row]) {
-        lineCursor = this.insertOne(transaction, lineCursor, grapheme);
+        if (grapheme === " ") {
+          if (!previousWasSpace) {
+            lineCursor = this.insertBlank(transaction, lineCursor);
+          }
+          previousWasSpace = true;
+        } else {
+          lineCursor = this.insertOne(transaction, lineCursor, grapheme);
+          previousWasSpace = false;
+        }
       }
       finalCursor = lineCursor;
     }
 
     this.commit(transaction, before, finalCursor, null);
+    this.lastInputWasSpace = previousWasSpace;
+  }
+
+  private deleteAndPull(
+    transaction: Transaction,
+    startX: number,
+    y: number,
+    width: number,
+  ): void {
+    let lastX = startX;
+    while (transaction.isTextCell(lastX, y)) {
+      if (lastX === Number.MAX_SAFE_INTEGER) break;
+      lastX += 1;
+    }
+    if (!transaction.isTextCell(lastX, y)) lastX -= 1;
+
+    for (let x = startX; x <= lastX; x += 1) {
+      const sourceX = x <= Number.MAX_SAFE_INTEGER - width ? x + width : null;
+      transaction.set(
+        x,
+        y,
+        sourceX !== null && sourceX <= lastX
+          ? transaction.get(sourceX, y)
+          : null,
+      );
+      if (x === Number.MAX_SAFE_INTEGER) break;
+    }
   }
 
   backspace(): void {
+    this.lastInputWasSpace = false;
     const before = snapshotState(this.cursor, this.selection);
     const transaction = new Transaction(this.document);
     const selectionStart = this.clearSelectionInTransaction(transaction);
@@ -225,30 +308,25 @@ export class EditorModel {
 
     if (this.cursor.x === Number.MIN_SAFE_INTEGER) return;
     const targetX = this.cursor.x - 1;
-    if (transaction.get(targetX, this.cursor.y) !== null) {
-      let end = targetX;
-      while (transaction.get(end, this.cursor.y) !== null) {
-        if (end === Number.MAX_SAFE_INTEGER) break;
-        end += 1;
-      }
-      for (let x = targetX; x < end; x += 1) {
-        const next =
-          x === Number.MAX_SAFE_INTEGER
-            ? null
-            : transaction.get(x + 1, this.cursor.y);
-        transaction.set(x, this.cursor.y, next);
-      }
-      if (
-        end === Number.MAX_SAFE_INTEGER &&
-        transaction.get(end, this.cursor.y) !== null
-      ) {
-        transaction.set(end, this.cursor.y, null);
-      }
+    if (transaction.isTextCell(targetX, this.cursor.y)) {
+      const joinsTwoSpaces =
+        transaction.get(targetX, this.cursor.y) !== null &&
+        targetX > Number.MIN_SAFE_INTEGER &&
+        targetX < Number.MAX_SAFE_INTEGER &&
+        transaction.isInterCharacterSpace(targetX - 1, this.cursor.y) &&
+        transaction.isInterCharacterSpace(targetX + 1, this.cursor.y);
+      this.deleteAndPull(
+        transaction,
+        targetX,
+        this.cursor.y,
+        joinsTwoSpaces ? 2 : 1,
+      );
     }
     this.commit(transaction, before, { x: targetX, y: this.cursor.y }, null);
   }
 
   deleteForward(): void {
+    this.lastInputWasSpace = false;
     const before = snapshotState(this.cursor, this.selection);
     const transaction = new Transaction(this.document);
     const selectionStart = this.clearSelectionInTransaction(transaction);
@@ -257,40 +335,35 @@ export class EditorModel {
       return;
     }
 
-    if (transaction.get(this.cursor.x, this.cursor.y) === null) return;
-    let end = this.cursor.x;
-    while (transaction.get(end, this.cursor.y) !== null) {
-      if (end === Number.MAX_SAFE_INTEGER) break;
-      end += 1;
-    }
-    for (let x = this.cursor.x; x < end; x += 1) {
-      const next =
-        x === Number.MAX_SAFE_INTEGER
-          ? null
-          : transaction.get(x + 1, this.cursor.y);
-      transaction.set(x, this.cursor.y, next);
-    }
-    if (
-      end === Number.MAX_SAFE_INTEGER &&
-      transaction.get(end, this.cursor.y) !== null
-    ) {
-      transaction.set(end, this.cursor.y, null);
-    }
+    if (!transaction.isTextCell(this.cursor.x, this.cursor.y)) return;
+    const joinsTwoSpaces =
+      transaction.get(this.cursor.x, this.cursor.y) !== null &&
+      this.cursor.x > Number.MIN_SAFE_INTEGER &&
+      this.cursor.x < Number.MAX_SAFE_INTEGER &&
+      transaction.isInterCharacterSpace(this.cursor.x - 1, this.cursor.y) &&
+      transaction.isInterCharacterSpace(this.cursor.x + 1, this.cursor.y);
+    this.deleteAndPull(
+      transaction,
+      this.cursor.x,
+      this.cursor.y,
+      joinsTwoSpaces ? 2 : 1,
+    );
     this.commit(transaction, before, this.cursor, null);
   }
 
   enter(): void {
+    this.lastInputWasSpace = false;
     const before = snapshotState(this.cursor, this.selection);
     const transaction = new Transaction(this.document);
     const selectionStart = this.clearSelectionInTransaction(transaction);
     const cursor = selectionStart ?? this.cursor;
 
     let referenceX: number | null = null;
-    if (transaction.get(cursor.x, cursor.y) !== null) {
+    if (transaction.isTextCell(cursor.x, cursor.y)) {
       referenceX = cursor.x;
     } else if (
       cursor.x > Number.MIN_SAFE_INTEGER &&
-      transaction.get(cursor.x - 1, cursor.y) !== null
+      transaction.isTextCell(cursor.x - 1, cursor.y)
     ) {
       referenceX = cursor.x - 1;
     }
@@ -304,14 +377,14 @@ export class EditorModel {
     let lineStart = referenceX;
     while (
       lineStart > Number.MIN_SAFE_INTEGER &&
-      transaction.get(lineStart - 1, cursor.y) !== null
+      transaction.isTextCell(lineStart - 1, cursor.y)
     ) {
       lineStart -= 1;
     }
     let lineEnd = referenceX;
     while (
       lineEnd < Number.MAX_SAFE_INTEGER &&
-      transaction.get(lineEnd + 1, cursor.y) !== null
+      transaction.isTextCell(lineEnd + 1, cursor.y)
     ) {
       lineEnd += 1;
     }
@@ -334,7 +407,7 @@ export class EditorModel {
           const y = current.y + dy;
           if (!Number.isSafeInteger(x) || !Number.isSafeInteger(y)) continue;
           const key = coordinateKey(x, y);
-          if (visited.has(key) || transaction.get(x, y) === null) continue;
+          if (visited.has(key) || !transaction.isTextCell(x, y)) continue;
           visited.add(key);
           queue.push({ x, y });
         }
@@ -399,6 +472,7 @@ export class EditorModel {
   }
 
   deleteSelection(): void {
+    this.lastInputWasSpace = false;
     if (!this.selection) return;
     const before = snapshotState(this.cursor, this.selection);
     const transaction = new Transaction(this.document);
@@ -407,6 +481,7 @@ export class EditorModel {
   }
 
   moveSelection(dx: number, dy: number): void {
+    this.lastInputWasSpace = false;
     const selection = this.selection;
     if (!selection || (dx === 0 && dy === 0)) return;
     const target: Selection = {
@@ -465,7 +540,7 @@ export class EditorModel {
   }
 
   search(query: string): SearchResult[] {
-    if (query.length === 0 || /[\r\n]/u.test(query)) {
+    if (query.length === 0 || /[\r\n]| {2}/u.test(query)) {
       this.searchResults = [];
       this.searchIndex = -1;
       this.emit();
@@ -495,12 +570,19 @@ export class EditorModel {
 
     for (const cell of cells) {
       const previous = run.at(-1)?.[0];
-      if (
-        previous &&
-        (previous.y !== cell[0].y || previous.x + 1 !== cell[0].x)
-      ) {
-        searchRun();
-        run = [];
+      if (previous) {
+        if (previous.y === cell[0].y && previous.x + 2 === cell[0].x) {
+          run.push([
+            { x: previous.x + 1, y: previous.y },
+            " ",
+          ]);
+        } else if (
+          previous.y !== cell[0].y ||
+          previous.x + 1 !== cell[0].x
+        ) {
+          searchRun();
+          run = [];
+        }
       }
       run.push(cell);
     }
@@ -514,6 +596,7 @@ export class EditorModel {
 
   navigateSearch(direction: 1 | -1): SearchResult | null {
     if (this.searchResults.length === 0) return null;
+    this.lastInputWasSpace = false;
     this.searchIndex =
       (this.searchIndex + direction + this.searchResults.length) %
       this.searchResults.length;
@@ -549,6 +632,7 @@ export class EditorModel {
   }
 
   undo(): void {
+    this.lastInputWasSpace = false;
     const batch = this.undoStack.pop();
     if (!batch) return;
     for (const change of batch.changes) {
@@ -563,6 +647,7 @@ export class EditorModel {
   }
 
   redo(): void {
+    this.lastInputWasSpace = false;
     const batch = this.redoStack.pop();
     if (!batch) return;
     for (const change of batch.changes) {
@@ -581,6 +666,7 @@ export class EditorModel {
     bookmarks: Bookmark[],
     cursor: Position = { x: 0, y: 0 },
   ): void {
+    this.lastInputWasSpace = false;
     const deletedKeys = this.document.chunkKeys();
     this.document = document;
     this.document.markAllDirty(deletedKeys);
@@ -599,6 +685,7 @@ export class EditorModel {
     bookmarks: Bookmark[],
     cursor: Position = { x: 0, y: 0 },
   ): void {
+    this.lastInputWasSpace = false;
     this.document = document;
     this.bookmarks = bookmarks.map((bookmark) => ({ ...bookmark }));
     this.cursor = { ...cursor };

@@ -52,10 +52,15 @@ export class SparseDocument {
   private readonly chunks = new Map<ChunkKey, Chunk>();
   private readonly dirtyRevisions = new Map<ChunkKey, number>();
   private revision = 0;
-  private cellCountValue = 0;
+  private storedCellCountValue = 0;
+  private interCharacterSpaceCountValue = 0;
 
   get cellCount(): number {
-    return this.cellCountValue;
+    return this.storedCellCountValue + this.interCharacterSpaceCountValue;
+  }
+
+  get storedCellCount(): number {
+    return this.storedCellCountValue;
   }
 
   get chunkCount(): number {
@@ -67,26 +72,62 @@ export class SparseDocument {
     return this.chunks.get(key)?.get(index) ?? null;
   }
 
+  isInterCharacterSpace(x: number, y: number): boolean {
+    assertSafePosition({ x, y });
+    return (
+      this.getCell(x, y) === null &&
+      x > Number.MIN_SAFE_INTEGER &&
+      x < Number.MAX_SAFE_INTEGER &&
+      this.getCell(x - 1, y) !== null &&
+      this.getCell(x + 1, y) !== null
+    );
+  }
+
+  getTextCell(x: number, y: number): string | null {
+    return this.getCell(x, y) ?? (this.isInterCharacterSpace(x, y) ? " " : null);
+  }
+
+  private spaceCandidates(x: number): number[] {
+    const candidates = [x];
+    if (x > Number.MIN_SAFE_INTEGER) candidates.push(x - 1);
+    if (x < Number.MAX_SAFE_INTEGER) candidates.push(x + 1);
+    return candidates;
+  }
+
+  private countInterCharacterSpaces(xs: Iterable<number>, y: number): number {
+    let count = 0;
+    for (const x of xs) {
+      if (this.isInterCharacterSpace(x, y)) count += 1;
+    }
+    return count;
+  }
+
   setCell(x: number, y: number, value: string | null): void {
     assertSafePosition({ x, y });
     if (value !== null) assertValidCellValue(value);
+    const nextValue = value === " " ? null : value;
 
     const { key, index } = chunkAddress({ x, y });
     const chunk = this.chunks.get(key);
     const before = chunk?.get(index) ?? null;
-    if (before === value) return;
+    if (before === nextValue) return;
+    const spaceCandidates = this.spaceCandidates(x);
+    const spacesBefore = this.countInterCharacterSpaces(spaceCandidates, y);
 
-    if (value === null) {
+    if (nextValue === null) {
       if (!chunk) return;
       chunk.delete(index);
-      this.cellCountValue -= 1;
+      this.storedCellCountValue -= 1;
       if (chunk.size === 0) this.chunks.delete(key);
     } else {
       const target = chunk ?? new Map<number, string>();
       if (!chunk) this.chunks.set(key, target);
-      if (before === null) this.cellCountValue += 1;
-      target.set(index, value);
+      if (before === null) this.storedCellCountValue += 1;
+      target.set(index, nextValue);
     }
+
+    const spacesAfter = this.countInterCharacterSpaces(spaceCandidates, y);
+    this.interCharacterSpaceCountValue += spacesAfter - spacesBefore;
 
     this.markDirty(key);
   }
@@ -187,7 +228,7 @@ export class SparseDocument {
   }
 
   bounds(): Bounds | null {
-    if (this.cellCountValue === 0) return null;
+    if (this.storedCellCountValue === 0) return null;
     let minX = Number.POSITIVE_INFINITY;
     let minY = Number.POSITIVE_INFINITY;
     let maxX = Number.NEGATIVE_INFINITY;
@@ -219,26 +260,42 @@ export class SparseDocument {
     const key = `${serialized.x},${serialized.y}` as ChunkKey;
     if (this.chunks.has(key)) throw new EditorError("중복된 청크가 있습니다.");
     const chunk: Chunk = new Map();
+    const seenIndices = new Set<number>();
+    const spaceCandidatesByRow = new Map<number, Set<number>>();
     for (const [index, value] of serialized.cells) {
       if (
         !Number.isInteger(index) ||
         index < 0 ||
         index >= CHUNK_CELL_COUNT ||
-        chunk.has(index)
+        seenIndices.has(index)
       ) {
         throw new EditorError("청크 안에 잘못되거나 중복된 셀 위치가 있습니다.");
       }
+      seenIndices.add(index);
       assertValidCellValue(value);
       const lx = index % CHUNK_SIZE;
       const ly = Math.floor(index / CHUNK_SIZE);
       const x = serialized.x * CHUNK_SIZE + lx;
       const y = serialized.y * CHUNK_SIZE + ly;
       assertSafePosition({ x, y });
+      if (value === " ") continue;
       chunk.set(index, value);
+      const candidates = spaceCandidatesByRow.get(y) ?? new Set<number>();
+      for (const candidate of this.spaceCandidates(x)) candidates.add(candidate);
+      spaceCandidatesByRow.set(y, candidates);
     }
     if (chunk.size > 0) {
+      let spacesBefore = 0;
+      for (const [y, candidates] of spaceCandidatesByRow) {
+        spacesBefore += this.countInterCharacterSpaces(candidates, y);
+      }
       this.chunks.set(key, chunk);
-      this.cellCountValue += chunk.size;
+      this.storedCellCountValue += chunk.size;
+      let spacesAfter = 0;
+      for (const [y, candidates] of spaceCandidatesByRow) {
+        spacesAfter += this.countInterCharacterSpaces(candidates, y);
+      }
+      this.interCharacterSpaceCountValue += spacesAfter - spacesBefore;
     }
   }
 
@@ -248,4 +305,3 @@ export class SparseDocument {
     return document;
   }
 }
-
