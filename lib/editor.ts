@@ -299,12 +299,49 @@ export class EditorModel {
     transaction.set(endX, y, null);
   }
 
+  private cursorAfterPreviousLine(
+    transaction: Transaction,
+    position: Position,
+  ): Position | null {
+    if (position.y === Number.MIN_SAFE_INTEGER) return null;
+    if (
+      position.x > Number.MIN_SAFE_INTEGER &&
+      transaction.isTextCell(position.x - 1, position.y)
+    ) {
+      return null;
+    }
+
+    const previousY = position.y - 1;
+    if (transaction.get(position.x, previousY) === null) return null;
+    if (
+      position.x > Number.MIN_SAFE_INTEGER &&
+      transaction.isTextCell(position.x - 1, previousY)
+    ) {
+      return null;
+    }
+
+    let x = position.x;
+    while (transaction.isTextCell(x, previousY)) {
+      x = safeAdd(x, 1);
+    }
+    return { x, y: previousY };
+  }
+
   backspace(): void {
     const before = snapshotState(this.cursor, this.selection);
     const transaction = new Transaction(this.document);
     const selectionStart = this.clearSelectionInTransaction(transaction);
     if (selectionStart) {
       this.commit(transaction, before, selectionStart, null);
+      return;
+    }
+
+    const previousLineCursor = this.cursorAfterPreviousLine(
+      transaction,
+      this.cursor,
+    );
+    if (previousLineCursor) {
+      this.commit(transaction, before, previousLineCursor, null);
       return;
     }
 

@@ -211,6 +211,30 @@ test("Enter splits a line and moves its connected lower block", () => {
   assert.deepEqual(editor.cursor, { x: 0, y: 1 });
 });
 
+test("backspace at a line start returns the cursor to the previous line end", () => {
+  const editor = new EditorModel();
+  editor.insertText("ㄱㄴㄷ");
+  editor.enter();
+  assert.deepEqual(editor.cursor, { x: 0, y: 1 });
+
+  editor.backspace();
+  assert.deepEqual(editor.cursor, { x: 3, y: 0 });
+  assert.equal(editor.document.getCell(0, 0), "ㄱ");
+  assert.equal(editor.document.getCell(2, 0), "ㄷ");
+
+  const twoLines = new EditorModel();
+  twoLines.insertText("ㄱ ㄴㄷ");
+  twoLines.setCursor({ x: 0, y: 1 });
+  twoLines.insertText("ㄹ ㅁㅂ");
+  twoLines.setCursor({ x: 0, y: 1 });
+
+  twoLines.backspace();
+  assert.deepEqual(twoLines.cursor, { x: 4, y: 0 });
+  assert.equal(twoLines.document.getCell(0, 1), "ㄹ");
+  assert.equal(twoLines.document.getCell(2, 1), "ㅁ");
+  assert.equal(twoLines.document.getCell(3, 1), "ㅂ");
+});
+
 test("selection deletion and undo restore cells, cursor, and selection", () => {
   const editor = new EditorModel();
   editor.insertText("ABC");
