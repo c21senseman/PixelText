@@ -64,8 +64,6 @@ type DragState =
     };
 
 const DEFAULT_CAMERA: Camera = { x: 0, y: 0, zoom: 1 };
-const DOUBLE_CLICK_DELAY_MS = 500;
-const DOUBLE_CLICK_DISTANCE_PX = 6;
 
 function messageFromError(error: unknown): string {
   if (error instanceof EditorError || error instanceof Error) return error.message;
@@ -120,11 +118,6 @@ export default function PixelTextEditor() {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const cameraRef = useRef<Camera>({ ...DEFAULT_CAMERA });
   const dragRef = useRef<DragState | null>(null);
-  const lastPrimaryClickRef = useRef<{
-    timeStamp: number;
-    clientX: number;
-    clientY: number;
-  } | null>(null);
   const minimapDraggingRef = useRef(false);
   const minimapTransformRef = useRef<MinimapTransform | null>(null);
   const composingRef = useRef(false);
@@ -559,18 +552,7 @@ export default function PixelTextEditor() {
   };
 
   const handlePointerDown = (event: PointerEvent<HTMLCanvasElement>) => {
-    if (event.button !== 0) return;
-    const previousClick = lastPrimaryClickRef.current;
-    const isDoubleClickStart = event.pointerType === "mouse"
-      && previousClick !== null
-      && event.timeStamp - previousClick.timeStamp <= DOUBLE_CLICK_DELAY_MS
-      && Math.hypot(
-        event.clientX - previousClick.clientX,
-        event.clientY - previousClick.clientY,
-      ) <= DOUBLE_CLICK_DISTANCE_PX;
-    lastPrimaryClickRef.current = null;
-
-    if (isDoubleClickStart) {
+    if (event.button === 2) {
       event.preventDefault();
       finishCompositionBeforeCommand();
       focusInput();
@@ -585,6 +567,7 @@ export default function PixelTextEditor() {
       event.currentTarget.classList.add("is-panning");
       return;
     }
+    if (event.button !== 0) return;
     finishCompositionBeforeCommand();
     focusInput();
     const cell = pointerCell(event);
@@ -652,19 +635,6 @@ export default function PixelTextEditor() {
       editor.setSelection(null);
       editor.setCursor(drag.anchor);
     }
-    const finishedWithClick = event.pointerType === "mouse"
-      && event.button === 0
-      && (
-        (drag.kind === "select" && !drag.moved)
-        || (drag.kind === "move" && drag.dx === 0 && drag.dy === 0)
-      );
-    lastPrimaryClickRef.current = finishedWithClick
-      ? {
-          timeStamp: event.timeStamp,
-          clientX: event.clientX,
-          clientY: event.clientY,
-        }
-      : null;
     dragRef.current = null;
     setSelectionPreview(null);
     focusInput();
@@ -962,12 +932,11 @@ export default function PixelTextEditor() {
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
           onPointerCancel={handlePointerUp}
-          onDoubleClick={(event) => event.preventDefault()}
           onContextMenu={(event) => event.preventDefault()}
         />
         <p id="canvas-instructions" className="sr-only">
-          방향키로 커서를 이동하고, 마우스 끌기로 사각형을 선택합니다. 두 번
-          클릭할 때 두 번째 클릭을 누른 채 끌면 화면을 이동하고 Ctrl과 휠로 확대합니다.
+          방향키로 커서를 이동하고, 마우스 끌기로 사각형을 선택합니다. 마우스
+          오른쪽 버튼을 누른 채 끌면 화면을 이동하고 Ctrl과 휠로 확대합니다.
         </p>
         <textarea
           ref={textareaRef}
@@ -1001,7 +970,7 @@ export default function PixelTextEditor() {
             <div className="guide-keys">
               <span><kbd>Click</kbd> 커서 놓기</span>
               <span><kbd>Drag</kbd> 영역 선택</span>
-              <span><kbd>더블클릭</kbd> + 끌기 이동</span>
+              <span><kbd>우클릭</kbd> + 끌기 이동</span>
               <span><kbd>Ctrl</kbd> + 휠 확대</span>
             </div>
           </div>
@@ -1177,7 +1146,7 @@ export default function PixelTextEditor() {
               </button>
             </div>
             <dl className="shortcut-list">
-              <div><dt>화면 이동</dt><dd><kbd>더블클릭</kbd> + 끌기</dd></div>
+              <div><dt>화면 이동</dt><dd><kbd>우클릭</kbd> + 끌기</dd></div>
               <div><dt>확대 · 축소</dt><dd><kbd>Ctrl</kbd> + 휠</dd></div>
               <div><dt>미니맵 확대 · 축소</dt><dd>미니맵 위 <kbd>Ctrl</kbd> + 휠</dd></div>
               <div><dt>사각형 선택</dt><dd>캔버스 끌기</dd></div>
