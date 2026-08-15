@@ -29,6 +29,54 @@ function snapshotState(
   return { cursor: { ...cursor }, selection: cloneSelection(selection) };
 }
 
+function* selectionMovementSteps(
+  dx: number,
+  dy: number,
+): Generator<Position> {
+  const distanceX = Math.abs(dx);
+  const distanceY = Math.abs(dy);
+  const directionX = Math.sign(dx);
+  const directionY = Math.sign(dy);
+  let x = 0;
+  let y = 0;
+  let error = distanceX - distanceY;
+
+  while (x !== dx || y !== dy) {
+    const previousX = x;
+    const previousY = y;
+    const doubledError = error * 2;
+    if (doubledError > -distanceY) {
+      error -= distanceY;
+      x += directionX;
+    }
+    if (doubledError < distanceX) {
+      error += distanceX;
+      y += directionY;
+    }
+    yield { x: x - previousX, y: y - previousY };
+  }
+}
+
+function selectionLeadingEdge(
+  selection: Selection,
+  step: Position,
+): Position[] {
+  const positions = new Map<string, Position>();
+  const add = (position: Position) => {
+    positions.set(coordinateKey(position.x, position.y), position);
+  };
+
+  if (step.x !== 0) {
+    const x = step.x > 0 ? selection.x2 - 1 : selection.x1;
+    for (let y = selection.y1; y < selection.y2; y += 1) add({ x, y });
+  }
+  if (step.y !== 0) {
+    const y = step.y > 0 ? selection.y2 - 1 : selection.y1;
+    for (let x = selection.x1; x < selection.x2; x += 1) add({ x, y });
+  }
+  return Array.from(positions.values());
+}
+
 class Transaction {
   private readonly changes = new Map<string, Change>();
 
@@ -693,6 +741,164 @@ export class EditorModel {
     if (start) this.commit(transaction, before, start, null);
   }
 
+  private collectTextBlock(
+    transaction: Transaction,
+    start: Position,
+    clearedPath: ReadonlySet<string>,
+  ): Map<string, { x: number; y: number; value: string }> {
+    if (transaction.get(start.x, start.y) === null) return new Map();
+    const block = new Map<string, { x: number; y: number; value: string }>();
+    const visited = new Set<string>();
+    const queue = [start];
+
+    for (let index = 0; index < queue.length; index += 1) {
+      const position = queue[index];
+      const key = coordinateKey(position.x, position.y);
+      if (visited.has(key)) continue;
+      visited.add(key);
+
+      const value = transaction.get(position.x, position.y);
+      const isPreservedSpace =
+        value === null &&
+        !clearedPath.has(key) &&
+        transaction.isInterCharacterSpace(position.x, position.y);
+      if (value === null && !isPreservedSpace) continue;
+      if (value !== null) {
+        block.set(key, { ...position, value });
+      }
+
+      for (let neighborY = -1; neighborY <= 1; neighborY += 1) {
+        for (let neighborX = -1; neighborX <= 1; neighborX += 1) {
+          if (neighborX === 0 && neighborY === 0) continue;
+          const x = position.x + neighborX;
+          const y = position.y + neighborY;
+          if (Number.isSafeInteger(x) && Number.isSafeInteger(y)) {
+            queue.push({ x, y });
+          }
+        }
+      }
+    }
+    return block;
+  }
+
+  private shiftTextBlockOneStep(
+    transaction: Transaction,
+    start: Position,
+    step: Position,
+    clearedPath: ReadonlySet<string>,
+  ): Position[] {
+    const moving = this.collectTextBlock(transaction, start, clearedPath);
+    const cells = Array.from(moving.values());
+
+    for (let index = 0; index < cells.length; index += 1) {
+      const cell = cells[index];
+      const destination = {
+        x: safeAdd(cell.x, step.x),
+        y: safeAdd(cell.y, step.y),
+      };
+      const destinationKey = coordinateKey(destination.x, destination.y);
+      if (
+        moving.has(destinationKey) ||
+        transaction.get(destination.x, destination.y) === null
+      ) {
+        continue;
+      }
+      const collision = this.collectTextBlock(
+        transaction,
+        destination,
+        clearedPath,
+      );
+      for (const [key, collidedCell] of collision) {
+        if (moving.has(key)) continue;
+        moving.set(key, collidedCell);
+        cells.push(collidedCell);
+      }
+    }
+
+    const destinations = cells.map((cell) => ({
+      x: safeAdd(cell.x, step.x),
+      y: safeAdd(cell.y, step.y),
+    }));
+    for (const cell of cells) transaction.set(cell.x, cell.y, null);
+    for (let index = 0; index < cells.length; index += 1) {
+      transaction.set(
+        destinations[index].x,
+        destinations[index].y,
+        cells[index].value,
+      );
+    }
+    return destinations;
+  }
+
+  private pushTextBlockOutOfPath(
+    transaction: Transaction,
+    start: Position,
+    step: Position,
+    clearedPath: ReadonlySet<string>,
+  ): void {
+    const pending = [start];
+    for (let index = 0; index < pending.length; index += 1) {
+      const position = pending[index];
+      if (transaction.get(position.x, position.y) === null) continue;
+      const destinations = this.shiftTextBlockOneStep(
+        transaction,
+        position,
+        step,
+        clearedPath,
+      );
+      for (const destination of destinations) {
+        if (clearedPath.has(coordinateKey(destination.x, destination.y))) {
+          pending.push(destination);
+        }
+      }
+    }
+  }
+
+  private pushTextAlongSelectionPath(
+    transaction: Transaction,
+    selection: Selection,
+    dx: number,
+    dy: number,
+  ): void {
+    const width = safeAdd(selection.x2, -selection.x1);
+    const height = safeAdd(selection.y2, -selection.y1);
+    assertTextRasterSize(
+      safeAdd(width, Math.abs(dx)),
+      safeAdd(height, Math.abs(dy)),
+    );
+
+    const clearedPath = new Set<string>();
+    for (let y = selection.y1; y < selection.y2; y += 1) {
+      for (let x = selection.x1; x < selection.x2; x += 1) {
+        clearedPath.add(coordinateKey(x, y));
+      }
+    }
+
+    let current = { ...selection };
+    for (const step of selectionMovementSteps(dx, dy)) {
+      current = {
+        x1: safeAdd(current.x1, step.x),
+        y1: safeAdd(current.y1, step.y),
+        x2: safeAdd(current.x2, step.x),
+        y2: safeAdd(current.y2, step.y),
+      };
+      const leadingEdge = selectionLeadingEdge(current, step);
+      for (const position of leadingEdge) {
+        clearedPath.add(coordinateKey(position.x, position.y));
+      }
+      for (const position of leadingEdge) {
+        while (transaction.get(position.x, position.y) !== null) {
+          this.pushTextBlockOutOfPath(
+            transaction,
+            position,
+            step,
+            clearedPath,
+          );
+        }
+      }
+    }
+  }
+
   moveSelection(dx: number, dy: number): void {
     const selection = this.selection;
     if (!selection || (dx === 0 && dy === 0)) return;
@@ -711,6 +917,21 @@ export class EditorModel {
       selection.y2,
       (x, y, value) => snapshot.push({ x, y, value }),
     );
+    let targetHasExistingText = false;
+    this.document.forEachInRect(
+      target.x1,
+      target.y1,
+      target.x2,
+      target.y2,
+      (x, y) => {
+        const belongsToSelection =
+          x >= selection.x1 &&
+          x < selection.x2 &&
+          y >= selection.y1 &&
+          y < selection.y2;
+        if (!belongsToSelection) targetHasExistingText = true;
+      },
+    );
 
     const before = snapshotState(this.cursor, this.selection);
     const transaction = new Transaction(this.document);
@@ -721,13 +942,17 @@ export class EditorModel {
       selection.y2,
       (x, y) => transaction.set(x, y, null),
     );
-    this.document.forEachInRect(
-      target.x1,
-      target.y1,
-      target.x2,
-      target.y2,
-      (x, y) => transaction.set(x, y, null),
-    );
+    if (!this.overwriteMode && targetHasExistingText) {
+      this.pushTextAlongSelectionPath(transaction, selection, dx, dy);
+    } else {
+      this.document.forEachInRect(
+        target.x1,
+        target.y1,
+        target.x2,
+        target.y2,
+        (x, y) => transaction.set(x, y, null),
+      );
+    }
     for (const cell of snapshot) {
       transaction.set(safeAdd(cell.x, dx), safeAdd(cell.y, dy), cell.value);
     }

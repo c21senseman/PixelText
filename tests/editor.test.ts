@@ -476,23 +476,112 @@ test("moving an overlapping rectangular selection uses a snapshot", () => {
   assert.deepEqual(editor.selection, { x1: 1, y1: 0, x2: 4, y2: 1 });
 });
 
-test("selection movement always overwrites destination text", () => {
-  for (const overwriteMode of [false, true]) {
-    const editor = new EditorModel();
-    editor.insertText("ABCDE");
-    editor.setCursor({ x: 1, y: 1 });
-    editor.insertText("XY");
-    editor.setSelection({ x1: 1, y1: 1, x2: 3, y2: 2 });
-    if (overwriteMode) editor.toggleOverwriteMode();
+test("insert-mode selection movement continuously pushes a target sentence", () => {
+  const editor = new EditorModel();
+  editor.document.setCell(0, 0, "S");
+  editor.document.setCell(2, 0, "A");
+  editor.document.setCell(3, 0, "B");
+  editor.document.setCell(4, 0, "C");
+  editor.setSelection({ x1: 0, y1: 0, x2: 1, y2: 1 });
 
-    editor.moveSelection(0, -1);
+  editor.moveSelection(3, 0);
 
-    assert.equal(editor.document.getCell(0, 0), "A");
-    assert.equal(editor.document.getCell(1, 0), "X");
-    assert.equal(editor.document.getCell(2, 0), "Y");
-    assert.equal(editor.document.getCell(3, 0), "D");
-    assert.equal(editor.document.getCell(4, 0), "E");
+  assert.equal(editor.document.getCell(3, 0), "S");
+  assert.equal(editor.document.getCell(4, 0), "A");
+  assert.equal(editor.document.getCell(5, 0), "B");
+  assert.equal(editor.document.getCell(6, 0), "C");
+  for (let x = 0; x < 3; x += 1) {
+    assert.equal(editor.document.getCell(x, 0), null);
   }
+
+  editor.undo();
+  assert.equal(editor.document.getCell(0, 0), "S");
+  assert.equal(editor.document.getCell(2, 0), "A");
+  assert.equal(editor.document.getCell(4, 0), "C");
+});
+
+test("selection movement pushes separate blocks encountered before its target", () => {
+  const editor = new EditorModel();
+  editor.document.setCell(0, 0, "S");
+  editor.document.setCell(2, 0, "A");
+  editor.document.setCell(6, 0, "T");
+  editor.setSelection({ x1: 0, y1: 0, x2: 1, y2: 1 });
+
+  editor.moveSelection(6, 0);
+
+  assert.equal(editor.document.getCell(6, 0), "S");
+  assert.equal(editor.document.getCell(7, 0), "A");
+  assert.equal(editor.document.getCell(8, 0), null);
+  assert.equal(editor.document.getCell(9, 0), "T");
+  for (let x = 0; x < 6; x += 1) {
+    assert.equal(editor.document.getCell(x, 0), null);
+  }
+});
+
+test("selection pushing follows left, vertical, and diagonal movement", () => {
+  const left = new EditorModel();
+  left.document.setCell(5, 0, "S");
+  left.insertText("ABC");
+  left.setSelection({ x1: 5, y1: 0, x2: 6, y2: 1 });
+  left.moveSelection(-3, 0);
+  assert.equal(left.document.getCell(2, 0), "S");
+  assert.equal(left.document.getCell(-1, 0), "A");
+  assert.equal(left.document.getCell(0, 0), "B");
+  assert.equal(left.document.getCell(1, 0), "C");
+
+  const vertical = new EditorModel();
+  vertical.document.setCell(1, 0, "S");
+  for (const [x, value] of [..."ABC"].entries()) {
+    vertical.document.setCell(x, 3, value);
+  }
+  vertical.setSelection({ x1: 1, y1: 0, x2: 2, y2: 1 });
+  vertical.moveSelection(0, 3);
+  assert.equal(vertical.document.getCell(1, 3), "S");
+  for (const [x, value] of [..."ABC"].entries()) {
+    assert.equal(vertical.document.getCell(x, 4), value);
+    assert.equal(vertical.document.getCell(x, 3), x === 1 ? "S" : null);
+  }
+
+  const diagonal = new EditorModel();
+  diagonal.document.setCell(0, 0, "S");
+  diagonal.document.setCell(2, 2, "A");
+  diagonal.document.setCell(3, 2, "B");
+  diagonal.setSelection({ x1: 0, y1: 0, x2: 1, y2: 1 });
+  diagonal.moveSelection(2, 2);
+  assert.equal(diagonal.document.getCell(2, 2), "S");
+  assert.equal(diagonal.document.getCell(3, 3), "A");
+  assert.equal(diagonal.document.getCell(4, 3), "B");
+  assert.equal(diagonal.document.getCell(1, 1), null);
+});
+
+test("an empty target uses simple movement even when the path has text", () => {
+  const editor = new EditorModel();
+  editor.document.setCell(0, 0, "S");
+  editor.document.setCell(2, 0, "A");
+  editor.setSelection({ x1: 0, y1: 0, x2: 1, y2: 1 });
+
+  editor.moveSelection(4, 0);
+
+  assert.equal(editor.document.getCell(0, 0), null);
+  assert.equal(editor.document.getCell(2, 0), "A");
+  assert.equal(editor.document.getCell(4, 0), "S");
+});
+
+test("overwrite-mode selection movement replaces the target in place", () => {
+  const editor = new EditorModel();
+  editor.insertText("ABCDE");
+  editor.setCursor({ x: 1, y: 1 });
+  editor.insertText("XY");
+  editor.setSelection({ x1: 1, y1: 1, x2: 3, y2: 2 });
+  editor.toggleOverwriteMode();
+
+  editor.moveSelection(0, -1);
+
+  assert.equal(editor.document.getCell(0, 0), "A");
+  assert.equal(editor.document.getCell(1, 0), "X");
+  assert.equal(editor.document.getCell(2, 0), "Y");
+  assert.equal(editor.document.getCell(3, 0), "D");
+  assert.equal(editor.document.getCell(4, 0), "E");
 });
 
 test("horizontal selection resize wraps only when shrinking", () => {
