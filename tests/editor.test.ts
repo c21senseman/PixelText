@@ -198,6 +198,53 @@ test("multiline paste inserts each row independently", () => {
   assert.deepEqual(editor.cursor, { x: 1, y: 2 });
 });
 
+test("overwrite mode replaces graphemes, spaces, and multiline paste in place", () => {
+  const editor = new EditorModel();
+  editor.insertText("ABCDE");
+  editor.setCursor({ x: 0, y: 1 });
+  editor.insertText("12345");
+  editor.setCursor({ x: 1, y: 0 });
+
+  editor.toggleOverwriteMode();
+  assert.equal(editor.overwriteMode, true);
+  editor.insertText("한 \nXY");
+
+  assert.equal(editor.document.getCell(0, 0), "A");
+  assert.equal(editor.document.getCell(1, 0), "한");
+  assert.equal(editor.document.getCell(2, 0), null);
+  assert.equal(editor.document.getCell(3, 0), "D");
+  assert.equal(editor.document.getCell(4, 0), "E");
+  assert.equal(editor.document.getCell(0, 1), "1");
+  assert.equal(editor.document.getCell(1, 1), "X");
+  assert.equal(editor.document.getCell(2, 1), "Y");
+  assert.equal(editor.document.getCell(3, 1), "4");
+  assert.equal(editor.document.getCell(4, 1), "5");
+  assert.deepEqual(editor.cursor, { x: 3, y: 1 });
+
+  editor.undo();
+  assert.equal(editor.document.getCell(1, 0), "B");
+  assert.equal(editor.document.getCell(2, 0), "C");
+  assert.equal(editor.document.getCell(1, 1), "2");
+  assert.equal(editor.overwriteMode, true);
+});
+
+test("overwrite mode persists through cursor and selected-text movement", () => {
+  const editor = new EditorModel();
+  editor.insertText("AB");
+  editor.toggleOverwriteMode();
+  editor.moveCursor(-1, 0);
+  editor.setSelection({ x1: 0, y1: 0, x2: 2, y2: 1 });
+  editor.moveCursorOrSelection(0, 1);
+
+  assert.equal(editor.overwriteMode, true);
+  assert.equal(editor.document.getCell(0, 0), null);
+  assert.equal(editor.document.getCell(0, 1), "A");
+  assert.equal(editor.document.getCell(1, 1), "B");
+
+  editor.toggleOverwriteMode();
+  assert.equal(editor.overwriteMode, false);
+});
+
 test("Enter splits a line and moves its connected lower block", () => {
   const editor = new EditorModel();
   editor.insertText("abcdef");
@@ -372,17 +419,20 @@ test("selection backspace does not pull detached text", () => {
   assert.deepEqual(editor.cursor, { x: 0, y: 0 });
 });
 
-test("arrow keys clear a rectangular selection and move from the current cursor", () => {
+test("arrow commands move a selection or the cursor by one cell", () => {
   const editor = new EditorModel();
-  editor.setCursor({ x: 4, y: 3 });
-  editor.setSelection({ x1: 2, y1: 1, x2: 8, y2: 6 });
-  editor.moveCursor(1, 0);
-  assert.deepEqual(editor.cursor, { x: 5, y: 3 });
-  assert.equal(editor.selection, null);
+  editor.insertText("AB");
+  editor.setSelection({ x1: 0, y1: 0, x2: 2, y2: 1 });
+  editor.moveCursorOrSelection(0, 1);
+  assert.equal(editor.document.getCell(0, 0), null);
+  assert.equal(editor.document.getCell(0, 1), "A");
+  assert.equal(editor.document.getCell(1, 1), "B");
+  assert.deepEqual(editor.cursor, { x: 0, y: 1 });
+  assert.deepEqual(editor.selection, { x1: 0, y1: 1, x2: 2, y2: 2 });
 
-  editor.setSelection({ x1: 2, y1: 1, x2: 8, y2: 6 });
-  editor.moveCursor(0, -1);
-  assert.deepEqual(editor.cursor, { x: 5, y: 2 });
+  editor.setSelection(null);
+  editor.moveCursorOrSelection(-1, 0);
+  assert.deepEqual(editor.cursor, { x: -1, y: 1 });
   assert.equal(editor.selection, null);
 });
 
@@ -424,6 +474,25 @@ test("moving an overlapping rectangular selection uses a snapshot", () => {
   assert.equal(editor.document.getCell(2, 0), "B");
   assert.equal(editor.document.getCell(3, 0), "C");
   assert.deepEqual(editor.selection, { x1: 1, y1: 0, x2: 4, y2: 1 });
+});
+
+test("selection movement always overwrites destination text", () => {
+  for (const overwriteMode of [false, true]) {
+    const editor = new EditorModel();
+    editor.insertText("ABCDE");
+    editor.setCursor({ x: 1, y: 1 });
+    editor.insertText("XY");
+    editor.setSelection({ x1: 1, y1: 1, x2: 3, y2: 2 });
+    if (overwriteMode) editor.toggleOverwriteMode();
+
+    editor.moveSelection(0, -1);
+
+    assert.equal(editor.document.getCell(0, 0), "A");
+    assert.equal(editor.document.getCell(1, 0), "X");
+    assert.equal(editor.document.getCell(2, 0), "Y");
+    assert.equal(editor.document.getCell(3, 0), "D");
+    assert.equal(editor.document.getCell(4, 0), "E");
+  }
 });
 
 test("horizontal selection resize wraps only when shrinking", () => {

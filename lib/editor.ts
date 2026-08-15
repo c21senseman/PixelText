@@ -87,6 +87,7 @@ export class EditorModel {
   document: SparseDocument;
   cursor: Position = { x: 0, y: 0 };
   selection: Selection | null = null;
+  overwriteMode = false;
   bookmarks: Bookmark[] = [];
   searchResults: SearchResult[] = [];
   searchIndex = -1;
@@ -128,6 +129,19 @@ export class EditorModel {
       x: safeAdd(this.cursor.x, dx),
       y: safeAdd(this.cursor.y, dy),
     });
+  }
+
+  moveCursorOrSelection(dx: number, dy: number): void {
+    if (this.selection) {
+      this.moveSelection(dx, dy);
+      return;
+    }
+    this.moveCursor(dx, dy);
+  }
+
+  toggleOverwriteMode(): void {
+    this.overwriteMode = !this.overwriteMode;
+    this.emit();
   }
 
   setSelection(selection: Selection | null): void {
@@ -262,6 +276,16 @@ export class EditorModel {
     return nextCursor;
   }
 
+  private overwriteOne(
+    transaction: Transaction,
+    position: Position,
+    grapheme: string,
+  ): Position {
+    const nextCursor = { x: safeAdd(position.x, 1), y: position.y };
+    transaction.set(position.x, position.y, grapheme === " " ? null : grapheme);
+    return nextCursor;
+  }
+
   insertText(rawText: string): void {
     const text = normalizeTextInput(rawText);
     if (text.length === 0) return;
@@ -282,7 +306,9 @@ export class EditorModel {
       const y = safeAdd(start.y, row);
       let lineCursor: Position = { x: start.x, y };
       for (const grapheme of segmentedLines[row]) {
-        if (grapheme === " ") {
+        if (this.overwriteMode) {
+          lineCursor = this.overwriteOne(transaction, lineCursor, grapheme);
+        } else if (grapheme === " ") {
           lineCursor = this.insertBlank(transaction, lineCursor);
         } else {
           lineCursor = this.insertOne(transaction, lineCursor, grapheme);

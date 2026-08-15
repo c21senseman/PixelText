@@ -28,6 +28,7 @@ export type DrawEditorOptions = {
   document: SparseDocument;
   camera: Camera;
   cursor: Position;
+  overwriteMode: boolean;
   selection: Selection | null;
   composition: string;
   searchResults: SearchResult[];
@@ -179,19 +180,38 @@ export function drawEditorCanvas(
     options.cursor.y >= visible.y1 &&
     options.cursor.y <= visible.y2
   ) {
-    const inset = Math.max(2, metrics.height * 0.13);
-    context.strokeStyle = "rgba(247, 247, 244, 0.94)";
-    context.lineWidth = Math.max(3, 4 * options.camera.zoom);
-    context.beginPath();
-    context.moveTo(cursorScreen.x, cursorScreen.y + inset);
-    context.lineTo(cursorScreen.x, cursorScreen.y + metrics.height - inset);
-    context.stroke();
-    context.strokeStyle = "#5261e6";
-    context.lineWidth = Math.max(1.5, 1.75 * options.camera.zoom);
-    context.beginPath();
-    context.moveTo(cursorScreen.x, cursorScreen.y + inset);
-    context.lineTo(cursorScreen.x, cursorScreen.y + metrics.height - inset);
-    context.stroke();
+    if (options.overwriteMode) {
+      const lineWidth = Math.max(1, 1.5 * options.camera.zoom);
+      context.fillStyle = "rgba(82, 97, 230, 0.2)";
+      context.fillRect(
+        cursorScreen.x,
+        cursorScreen.y,
+        metrics.width,
+        metrics.height,
+      );
+      context.strokeStyle = "#5261e6";
+      context.lineWidth = lineWidth;
+      context.strokeRect(
+        cursorScreen.x + lineWidth / 2,
+        cursorScreen.y + lineWidth / 2,
+        Math.max(0, metrics.width - lineWidth),
+        Math.max(0, metrics.height - lineWidth),
+      );
+    } else {
+      const inset = Math.max(2, metrics.height * 0.13);
+      context.strokeStyle = "rgba(247, 247, 244, 0.94)";
+      context.lineWidth = Math.max(3, 4 * options.camera.zoom);
+      context.beginPath();
+      context.moveTo(cursorScreen.x, cursorScreen.y + inset);
+      context.lineTo(cursorScreen.x, cursorScreen.y + metrics.height - inset);
+      context.stroke();
+      context.strokeStyle = "#5261e6";
+      context.lineWidth = Math.max(1.5, 1.75 * options.camera.zoom);
+      context.beginPath();
+      context.moveTo(cursorScreen.x, cursorScreen.y + inset);
+      context.lineTo(cursorScreen.x, cursorScreen.y + metrics.height - inset);
+      context.stroke();
+    }
   }
 
   if (options.composition) {
@@ -202,7 +222,9 @@ export function drawEditorCanvas(
     for (let index = 0; index < graphemes.length; index += 1) {
       const position = { x: options.cursor.x + index, y: options.cursor.y };
       const screen = logicalToScreen(position, options.camera, viewport);
-      context.fillStyle = "rgba(82, 97, 230, 0.08)";
+      context.fillStyle = options.overwriteMode
+        ? "rgba(224, 227, 255, 0.96)"
+        : "rgba(82, 97, 230, 0.08)";
       context.fillRect(screen.x, screen.y, metrics.width, metrics.height);
       context.save();
       context.beginPath();

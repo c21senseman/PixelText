@@ -353,6 +353,7 @@ export default function PixelTextEditor() {
       document: editor.document,
       camera: cameraRef.current,
       cursor: editor.cursor,
+      overwriteMode: editor.overwriteMode,
       selection: editor.selection,
       composition,
       searchResults: editor.searchResults,
@@ -463,11 +464,19 @@ export default function PixelTextEditor() {
       ArrowUp: [0, -1],
       ArrowDown: [0, 1],
     };
+    if (event.key === "Insert") {
+      event.preventDefault();
+      if (event.repeat) return;
+      finishCompositionBeforeCommand();
+      runAction(() => editor.toggleOverwriteMode());
+      focusInput();
+      return;
+    }
     if (event.key in cursorCommands) {
       event.preventDefault();
       finishCompositionBeforeCommand();
       const [dx, dy] = cursorCommands[event.key];
-      runAction(() => editor.moveCursor(dx, dy));
+      runAction(() => editor.moveCursorOrSelection(dx, dy));
       focusInput();
       return;
     }
@@ -1261,16 +1270,18 @@ export default function PixelTextEditor() {
           onContextMenu={(event) => event.preventDefault()}
         />
         <p id="canvas-instructions" className="sr-only">
-          방향키로 커서를 이동하고, 마우스 끌기로 사각형을 선택합니다. 선택
-          중 화면 가장자리로 끌면 캔버스가 자동 이동합니다. 선택의 상하좌우
-          경계를 끌면 크기를 조절하며, 왼쪽이나 오른쪽 경계를 줄일 때 글 시작
-          위치에 맞춰 자동 줄바꿈합니다. 마우스 오른쪽 버튼을 누른 채 끌면
-          화면을 이동하고 Ctrl과 휠로 확대합니다.
+          방향키로 커서를 이동합니다. 선택 영역이 있으면 방향키로 영역 안의
+          문자를 한 칸씩 이동합니다. Insert 키로 삽입과 덮어쓰기 모드를
+          전환합니다. 마우스 끌기로 사각형을 선택하며, 선택 중 화면 가장자리로
+          끌면 캔버스가 자동 이동합니다. 선택의 상하좌우 경계를 끌면 크기를
+          조절하며, 왼쪽이나 오른쪽 경계를 줄일 때 글 시작 위치에 맞춰 자동
+          줄바꿈합니다. 마우스 오른쪽 버튼을 누른 채 끌면 화면을 이동하고
+          Ctrl과 휠로 확대합니다.
         </p>
         <textarea
           ref={textareaRef}
           className="ime-input"
-          aria-label="캔버스 문자 입력"
+          aria-label={`캔버스 문자 입력, ${editor.overwriteMode ? "덮어쓰기" : "삽입"} 모드`}
           autoCapitalize="off"
           autoCorrect="off"
           spellCheck={false}
@@ -1486,7 +1497,8 @@ export default function PixelTextEditor() {
               <div><dt>미니맵 확대 · 축소</dt><dd>미니맵 위 <kbd>Ctrl</kbd> + 휠</dd></div>
               <div><dt>사각형 선택</dt><dd>캔버스 끌기 · 가장자리 자동 이동</dd></div>
               <div><dt>선택 크기</dt><dd>선택 영역의 상하좌우 경계 끌기</dd></div>
-              <div><dt>선택 이동</dt><dd>선택 영역 끌기</dd></div>
+              <div><dt>선택 이동</dt><dd>방향키 · 선택 영역 끌기</dd></div>
+              <div><dt>입력 모드</dt><dd><kbd>Insert</kbd> 삽입 · 덮어쓰기 전환</dd></div>
               <div><dt>실행 취소</dt><dd><kbd>Ctrl</kbd> + <kbd>Z</kbd></dd></div>
               <div><dt>다시 실행</dt><dd><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Z</kbd></dd></div>
             </dl>
@@ -1539,6 +1551,7 @@ export default function PixelTextEditor() {
           <span><b>y</b> {editor.cursor.y.toLocaleString("ko-KR")}</span>
           <span className="desktop-status"><b>확대</b> {Math.round(camera.zoom * 100)}%</span>
           <span><b>문자</b> {editor.document.cellCount.toLocaleString("ko-KR")}</span>
+          <span><b>모드</b> {editor.overwriteMode ? "덮어쓰기" : "삽입"}</span>
           {selectionSize && <span><b>선택</b> {selectionSize}</span>}
         </div>
         <div className={`save-status save-${saveState}`} title={saveError}>
