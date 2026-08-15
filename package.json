@@ -2,7 +2,8 @@
   "name": "pixeltext-canvas",
   "version": "0.1.0",
   "private": true,
-  "description": "브라우저에서 오프라인으로 실행되는 무한 2차원 문자 캔버스",
+  "description": "An offline, infinite 2D canvas for arranging text anywhere.",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/c21senseman/PixelText.git"

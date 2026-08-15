@@ -2,6 +2,16 @@
 
 이 프로젝트는 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## 미출시
+
+### 변경
+
+- 기본 README와 프로젝트 메타데이터를 영어로 전환하고 한국어 README 추가
+
+### 추가
+
+- MIT 라이선스
+
 ## [0.1.0] - 2026-08-16
 
 첫 공개 릴리스입니다.
