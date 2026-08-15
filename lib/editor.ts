@@ -434,6 +434,21 @@ export class EditorModel {
     this.commit(transaction, before, this.cursor, null);
   }
 
+  private textLineStart(
+    transaction: Transaction,
+    referenceX: number,
+    y: number,
+  ): number {
+    let lineStart = referenceX;
+    while (
+      lineStart > Number.MIN_SAFE_INTEGER &&
+      transaction.isTextCell(lineStart - 1, y)
+    ) {
+      lineStart -= 1;
+    }
+    return lineStart;
+  }
+
   enter(): void {
     const before = snapshotState(this.cursor, this.selection);
     const transaction = new Transaction(this.document);
@@ -456,13 +471,7 @@ export class EditorModel {
       return;
     }
 
-    let lineStart = referenceX;
-    while (
-      lineStart > Number.MIN_SAFE_INTEGER &&
-      transaction.isTextCell(lineStart - 1, cursor.y)
-    ) {
-      lineStart -= 1;
-    }
+    const lineStart = this.textLineStart(transaction, referenceX, cursor.y);
     let lineEnd = referenceX;
     while (
       lineEnd < Number.MAX_SAFE_INTEGER &&
@@ -616,13 +625,6 @@ export class EditorModel {
       throw new EditorError("선택 영역의 너비는 한 칸 이상이어야 합니다.");
     }
 
-    if (edge === "left") {
-      if (boundaryX === selection.x1) return;
-      this.selection = { ...selection, x1: boundaryX };
-      this.emit();
-      return;
-    }
-
     const sourceWidth = safeAdd(selection.x2, -selection.x1);
     const sourceHeight = safeAdd(selection.y2, -selection.y1);
     const targetWidth = safeAdd(targetX2, -targetX1);
@@ -641,22 +643,53 @@ export class EditorModel {
       return;
     }
 
-    const lines: Array<Array<string | null>> = [];
+    const transaction = new Transaction(this.document);
+    const lines: Array<{
+      cells: Array<string | null>;
+      targetStartX: number;
+      targetLineWidth: number;
+    }> = [];
     for (let y = selection.y1; y < selection.y2; y += 1) {
       const row: Array<string | null> = [];
       let lastOccupied = -1;
+      let firstTextCellX: number | null = null;
       for (let offset = 0; offset < sourceWidth; offset += 1) {
-        const value = this.document.getCell(safeAdd(selection.x1, offset), y);
+        const x = safeAdd(selection.x1, offset);
+        const value = transaction.get(x, y);
         row.push(value);
         if (value !== null) lastOccupied = offset;
+        if (firstTextCellX === null && transaction.isTextCell(x, y)) {
+          firstTextCellX = x;
+        }
       }
-      lines.push(lastOccupied >= 0 ? row.slice(0, lastOccupied + 1) : []);
+
+      if (firstTextCellX === null || lastOccupied < 0) {
+        lines.push({
+          cells: [],
+          targetStartX: targetX1,
+          targetLineWidth: targetWidth,
+        });
+      } else {
+        const lineStart = this.textLineStart(transaction, firstTextCellX, y);
+        const sourceStartX = Math.max(selection.x1, lineStart);
+        const sourceStartOffset = safeAdd(sourceStartX, -selection.x1);
+        const targetStartX =
+          lineStart >= targetX1 && lineStart < targetX2
+            ? lineStart
+            : targetX1;
+        lines.push({
+          cells: row.slice(sourceStartOffset, lastOccupied + 1),
+          targetStartX,
+          targetLineWidth: safeAdd(targetX2, -targetStartX),
+        });
+      }
       if (y === Number.MAX_SAFE_INTEGER) break;
     }
 
     const targetHeight = lines.reduce(
       (height, line) =>
-        height + Math.max(1, Math.ceil(line.length / targetWidth)),
+        height +
+        Math.max(1, Math.ceil(line.cells.length / line.targetLineWidth)),
       0,
     );
     assertTextRasterSize(targetWidth, targetHeight);
@@ -668,7 +701,6 @@ export class EditorModel {
     };
 
     const before = snapshotState(this.cursor, selection);
-    const transaction = new Transaction(this.document);
     this.document.forEachInRect(
       selection.x1,
       selection.y1,
@@ -685,19 +717,22 @@ export class EditorModel {
     );
     let targetRow = 0;
     for (const line of lines) {
-      for (let index = 0; index < line.length; index += 1) {
-        const value = line[index];
+      for (let index = 0; index < line.cells.length; index += 1) {
+        const value = line.cells[index];
         if (value === null) continue;
         transaction.set(
-          safeAdd(target.x1, index % targetWidth),
+          safeAdd(line.targetStartX, index % line.targetLineWidth),
           safeAdd(
             target.y1,
-            targetRow + Math.floor(index / targetWidth),
+            targetRow + Math.floor(index / line.targetLineWidth),
           ),
           value,
         );
       }
-      targetRow += Math.max(1, Math.ceil(line.length / targetWidth));
+      targetRow += Math.max(
+        1,
+        Math.ceil(line.cells.length / line.targetLineWidth),
+      );
     }
 
     this.commit(transaction, before, { x: target.x1, y: target.y1 }, target);

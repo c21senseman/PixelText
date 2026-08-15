@@ -406,23 +406,51 @@ test("horizontal selection shrink preserves existing line breaks", () => {
   assert.deepEqual(editor.selection, { x1: 0, y1: 0, x2: 3, y2: 6 });
 });
 
-test("left selection edge changes bounds without moving text", () => {
+test("selection shrink wraps at an in-bounds text line start", () => {
   const editor = new EditorModel();
-  editor.setCursor({ x: 4, y: 2 });
+  editor.setCursor({ x: 4, y: 0 });
   editor.insertText("ABCDEF");
-  editor.setSelection({ x1: 4, y1: 2, x2: 10, y2: 3 });
+  editor.setSelection({ x1: 0, y1: 0, x2: 10, y2: 1 });
 
-  editor.resizeSelectionHorizontal("left", 7);
-  assert.deepEqual(editor.selection, { x1: 7, y1: 2, x2: 10, y2: 3 });
-  assert.equal(editor.document.getCell(4, 2), "A");
-  assert.equal(editor.document.getCell(7, 2), "D");
-  assert.equal(editor.document.getCell(9, 2), "F");
-  assert.equal(editor.document.getCell(7, 3), null);
+  editor.resizeSelectionHorizontal("right", 7);
 
-  editor.resizeSelectionHorizontal("left", 4);
-  assert.deepEqual(editor.selection, { x1: 4, y1: 2, x2: 10, y2: 3 });
-  assert.equal(editor.document.getCell(4, 2), "A");
-  assert.equal(editor.document.getCell(9, 2), "F");
+  assert.deepEqual(editor.selection, { x1: 0, y1: 0, x2: 7, y2: 2 });
+  assert.equal(editor.document.getCell(4, 0), "A");
+  assert.equal(editor.document.getCell(6, 0), "C");
+  assert.equal(editor.document.getCell(4, 1), "D");
+  assert.equal(editor.document.getCell(6, 1), "F");
+  assert.equal(editor.document.getCell(0, 1), null);
+});
+
+test("selection shrink falls back to its left edge when line start is outside", () => {
+  const editor = new EditorModel();
+  editor.setCursor({ x: 4, y: 0 });
+  editor.insertText("ABCDEF");
+  editor.setSelection({ x1: 0, y1: 0, x2: 10, y2: 1 });
+
+  editor.resizeSelectionHorizontal("right", 3);
+
+  assert.deepEqual(editor.selection, { x1: 0, y1: 0, x2: 3, y2: 2 });
+  assert.equal(editor.document.getCell(0, 0), "A");
+  assert.equal(editor.document.getCell(2, 0), "C");
+  assert.equal(editor.document.getCell(0, 1), "D");
+  assert.equal(editor.document.getCell(2, 1), "F");
+});
+
+test("left selection edge shrink reflows content at the bounded line start", () => {
+  const editor = new EditorModel();
+  editor.setCursor({ x: 4, y: 0 });
+  editor.insertText("ABCDEF");
+  editor.setSelection({ x1: 0, y1: 0, x2: 10, y2: 1 });
+
+  editor.resizeSelectionHorizontal("left", 5);
+
+  assert.deepEqual(editor.selection, { x1: 5, y1: 0, x2: 10, y2: 2 });
+  assert.equal(editor.document.getCell(4, 0), null);
+  assert.equal(editor.document.getCell(5, 0), "A");
+  assert.equal(editor.document.getCell(9, 0), "E");
+  assert.equal(editor.document.getCell(5, 1), "F");
+  assert.equal(editor.document.getCell(6, 1), null);
 });
 
 test("top and bottom selection edges change bounds without moving text", () => {
