@@ -1,16 +1,23 @@
 import { SerializedChunk, SparseDocument } from "./document";
-import { isValidCellValue } from "./graphemes";
+import { hasControlCharacter, isValidCellValue } from "./graphemes";
 import {
   Bookmark,
   Camera,
   CHUNK_CELL_COUNT,
   CHUNK_SIZE,
   EditorError,
+  MAX_BOOKMARK_ID_LENGTH,
+  MAX_BOOKMARK_NAME_LENGTH,
+  MAX_BOOKMARKS,
+  MAX_TEXT_CELLS,
   MAX_ZOOM,
   MIN_ZOOM,
   assertSafePosition,
   assertTextRasterSize,
 } from "./types";
+
+export const MAX_IMPORT_FILE_BYTES = 20 * 1024 * 1024;
+const MAX_IMPORT_CHUNKS = 50_000;
 
 export type PixelTextFile = {
   version: 1;
@@ -37,6 +44,56 @@ function hasRequiredFields(
   return fields.every((field) => Object.prototype.hasOwnProperty.call(value, field));
 }
 
+export function assertImportFileSize(size: number): void {
+  if (
+    !Number.isSafeInteger(size) ||
+    size < 0 ||
+    size > MAX_IMPORT_FILE_BYTES
+  ) {
+    throw new EditorError("가져올 JSON 파일은 20 MiB 이하여야 합니다.");
+  }
+}
+
+export function parseBookmarks(value: unknown): Bookmark[] {
+  if (!Array.isArray(value)) {
+    throw new EditorError("bookmarks는 배열이어야 합니다.");
+  }
+  if (value.length > MAX_BOOKMARKS) {
+    throw new EditorError(
+      `책갈피는 최대 ${MAX_BOOKMARKS.toLocaleString()}개까지 가져올 수 있습니다.`,
+    );
+  }
+
+  const bookmarkIds = new Set<string>();
+  const bookmarks: Bookmark[] = [];
+  for (const rawBookmark of value) {
+    if (
+      !isRecord(rawBookmark) ||
+      typeof rawBookmark.id !== "string" ||
+      rawBookmark.id.length === 0 ||
+      rawBookmark.id.length > MAX_BOOKMARK_ID_LENGTH ||
+      hasControlCharacter(rawBookmark.id) ||
+      bookmarkIds.has(rawBookmark.id) ||
+      typeof rawBookmark.name !== "string" ||
+      rawBookmark.name.trim().length === 0 ||
+      rawBookmark.name.length > MAX_BOOKMARK_NAME_LENGTH ||
+      hasControlCharacter(rawBookmark.name) ||
+      !Number.isSafeInteger(rawBookmark.x) ||
+      !Number.isSafeInteger(rawBookmark.y)
+    ) {
+      throw new EditorError("잘못되거나 중복된 책갈피가 있습니다.");
+    }
+    bookmarkIds.add(rawBookmark.id);
+    bookmarks.push({
+      id: rawBookmark.id,
+      name: rawBookmark.name,
+      x: rawBookmark.x as number,
+      y: rawBookmark.y as number,
+    });
+  }
+  return bookmarks;
+}
+
 export function exportJson(
   document: SparseDocument,
   bookmarks: Bookmark[],
@@ -53,6 +110,8 @@ export function exportJson(
 }
 
 export function importJson(raw: string): ImportedDocument {
+  assertImportFileSize(raw.length);
+  assertImportFileSize(new TextEncoder().encode(raw).byteLength);
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -77,9 +136,15 @@ export function importJson(raw: string): ImportedDocument {
   if (!Array.isArray(parsed.chunks)) {
     throw new EditorError("chunks는 배열이어야 합니다.");
   }
+  if (parsed.chunks.length > MAX_IMPORT_CHUNKS) {
+    throw new EditorError(
+      `청크는 최대 ${MAX_IMPORT_CHUNKS.toLocaleString()}개까지 가져올 수 있습니다.`,
+    );
+  }
 
   const chunks: SerializedChunk[] = [];
   const chunkKeys = new Set<string>();
+  let importedCellCount = 0;
   for (const rawChunk of parsed.chunks) {
     if (
       !isRecord(rawChunk) ||
@@ -88,6 +153,12 @@ export function importJson(raw: string): ImportedDocument {
       !Array.isArray(rawChunk.cells)
     ) {
       throw new EditorError("잘못된 청크가 있습니다.");
+    }
+    importedCellCount += rawChunk.cells.length;
+    if (importedCellCount > MAX_TEXT_CELLS) {
+      throw new EditorError(
+        `저장 셀은 최대 ${MAX_TEXT_CELLS.toLocaleString()}개까지 가져올 수 있습니다.`,
+      );
     }
     const key = `${rawChunk.x},${rawChunk.y}`;
     if (chunkKeys.has(key)) throw new EditorError("중복된 청크 좌표가 있습니다.");
@@ -116,31 +187,7 @@ export function importJson(raw: string): ImportedDocument {
     });
   }
 
-  if (!Array.isArray(parsed.bookmarks)) {
-    throw new EditorError("bookmarks는 배열이어야 합니다.");
-  }
-  const bookmarkIds = new Set<string>();
-  const bookmarks: Bookmark[] = [];
-  for (const rawBookmark of parsed.bookmarks) {
-    if (
-      !isRecord(rawBookmark) ||
-      typeof rawBookmark.id !== "string" ||
-      rawBookmark.id.length === 0 ||
-      bookmarkIds.has(rawBookmark.id) ||
-      typeof rawBookmark.name !== "string" ||
-      !Number.isSafeInteger(rawBookmark.x) ||
-      !Number.isSafeInteger(rawBookmark.y)
-    ) {
-      throw new EditorError("잘못되거나 중복된 책갈피가 있습니다.");
-    }
-    bookmarkIds.add(rawBookmark.id);
-    bookmarks.push({
-      id: rawBookmark.id,
-      name: rawBookmark.name,
-      x: rawBookmark.x as number,
-      y: rawBookmark.y as number,
-    });
-  }
+  const bookmarks = parseBookmarks(parsed.bookmarks);
 
   if (!isRecord(parsed.camera)) {
     throw new EditorError("camera가 올바르지 않습니다.");
@@ -184,4 +231,3 @@ export function exportTxt(document: SparseDocument): string {
   }
   return lines.join("\n");
 }
-

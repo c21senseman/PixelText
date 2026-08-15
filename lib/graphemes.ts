@@ -1,11 +1,20 @@
 import { EditorError } from "./types";
 
 const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+export const MAX_CELL_CODE_UNITS = 256;
 
-function hasC0Control(value: string, allowLineFeed: boolean): boolean {
+export function hasControlCharacter(
+  value: string,
+  allowLineFeed = false,
+): boolean {
   for (let index = 0; index < value.length; index += 1) {
     const code = value.charCodeAt(index);
-    if (code <= 0x1f && !(allowLineFeed && code === 0x0a)) return true;
+    if (
+      ((code <= 0x1f && !(allowLineFeed && code === 0x0a)) ||
+        (code >= 0x7f && code <= 0x9f))
+    ) {
+      return true;
+    }
   }
   return false;
 }
@@ -16,7 +25,7 @@ export function segmentGraphemes(value: string): string[] {
 
 export function normalizeTextInput(value: string): string {
   const normalized = value.replace(/\r\n?/gu, "\n");
-  if (hasC0Control(normalized, true)) {
+  if (hasControlCharacter(normalized, true)) {
     throw new EditorError("탭과 제어 문자는 입력할 수 없습니다.");
   }
   return normalized;
@@ -26,7 +35,8 @@ export function isValidCellValue(value: unknown): value is string {
   if (
     typeof value !== "string" ||
     value.length === 0 ||
-    hasC0Control(value, false)
+    value.length > MAX_CELL_CODE_UNITS ||
+    hasControlCharacter(value, false)
   ) {
     return false;
   }

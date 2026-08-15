@@ -1,11 +1,17 @@
 import { SparseDocument } from "./document";
-import { normalizeTextInput, segmentGraphemes } from "./graphemes";
+import {
+  hasControlCharacter,
+  normalizeTextInput,
+  segmentGraphemes,
+} from "./graphemes";
 import {
   Bookmark,
   Change,
   EditorError,
   EditorSnapshot,
   HistoryBatch,
+  MAX_BOOKMARK_NAME_LENGTH,
+  MAX_BOOKMARKS,
   Position,
   SearchResult,
   Selection,
@@ -1208,6 +1214,19 @@ export class EditorModel {
   addBookmark(name: string): Bookmark {
     const trimmed = name.trim();
     if (!trimmed) throw new EditorError("책갈피 이름을 입력하세요.");
+    if (trimmed.length > MAX_BOOKMARK_NAME_LENGTH) {
+      throw new EditorError(
+        `책갈피 이름은 ${MAX_BOOKMARK_NAME_LENGTH}자 이하여야 합니다.`,
+      );
+    }
+    if (hasControlCharacter(trimmed)) {
+      throw new EditorError("책갈피 이름에는 제어 문자를 사용할 수 없습니다.");
+    }
+    if (this.bookmarks.length >= MAX_BOOKMARKS) {
+      throw new EditorError(
+        `책갈피는 최대 ${MAX_BOOKMARKS.toLocaleString()}개까지 만들 수 있습니다.`,
+      );
+    }
     const bookmark: Bookmark = {
       id:
         typeof crypto !== "undefined" && "randomUUID" in crypto

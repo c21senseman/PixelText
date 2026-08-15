@@ -2,13 +2,20 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { chunkAddress, SparseDocument } from "../lib/document";
 import { EditorModel } from "../lib/editor";
-import { exportJson, importJson } from "../lib/io";
+import { MAX_CELL_CODE_UNITS, isValidCellValue } from "../lib/graphemes";
+import {
+  MAX_IMPORT_FILE_BYTES,
+  assertImportFileSize,
+  exportJson,
+  importJson,
+} from "../lib/io";
 import {
   clampMinimapTarget,
   drawEditorCanvas,
   shouldDrawCursor,
 } from "../lib/renderer";
 import {
+  MAX_BOOKMARK_NAME_LENGTH,
   MIN_ZOOM,
   selectionAutoPanVelocity,
   selectionFromCursorDrag,
@@ -1030,6 +1037,39 @@ test("legacy JSON space cells load as empty cells", () => {
   assert.doesNotMatch(
     exportJson(imported.document, [], { x: 0, y: 0, zoom: 1 }),
     /\[\s*1,\s*" "\s*\]/u,
+  );
+});
+
+test("untrusted imports enforce resource and metadata limits", () => {
+  assert.throws(
+    () => assertImportFileSize(MAX_IMPORT_FILE_BYTES + 1),
+    /20 MiB/,
+  );
+  assert.equal(
+    isValidCellValue(`A${"\u0301".repeat(MAX_CELL_CODE_UNITS)}`),
+    false,
+  );
+
+  const document = {
+    version: 1,
+    chunkSize: 64,
+    chunks: [],
+    bookmarks: [
+      {
+        id: "b1",
+        name: "가".repeat(MAX_BOOKMARK_NAME_LENGTH + 1),
+        x: 0,
+        y: 0,
+      },
+    ],
+    camera: { x: 0, y: 0, zoom: 1 },
+  };
+  assert.throws(() => importJson(JSON.stringify(document)), /책갈피/);
+
+  const editor = new EditorModel();
+  assert.throws(
+    () => editor.addBookmark("가".repeat(MAX_BOOKMARK_NAME_LENGTH + 1)),
+    /120자/,
   );
 });
 

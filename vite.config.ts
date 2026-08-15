@@ -1,7 +1,7 @@
 import react from "@vitejs/plugin-react";
 import { fileURLToPath, URL } from "node:url";
 import { defineConfig } from "vite";
-import { singleHtml } from "./build/single-html-plugin";
+import { singleHtml } from "./build/single-html-plugin.ts";
 
 export default defineConfig({
   base: "./",

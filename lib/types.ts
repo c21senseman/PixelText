@@ -9,6 +9,9 @@ const SELECTION_AUTO_PAN_SPEED_PX = 600;
 export const MAX_TEXT_WIDTH = 100_000;
 export const MAX_TEXT_HEIGHT = 100_000;
 export const MAX_TEXT_CELLS = 1_000_000;
+export const MAX_BOOKMARKS = 1_000;
+export const MAX_BOOKMARK_NAME_LENGTH = 120;
+export const MAX_BOOKMARK_ID_LENGTH = 128;
 
 export type Position = {
   x: number;

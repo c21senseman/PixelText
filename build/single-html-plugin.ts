@@ -1,5 +1,16 @@
 import type { Plugin } from "vite";
 
+const RELEASE_CSP = [
+  "default-src 'none'",
+  "script-src 'unsafe-inline'",
+  "style-src 'unsafe-inline'",
+  "img-src data:",
+  "connect-src 'none'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'none'",
+].join("; ");
+
 function sourceText(source: string | Uint8Array): string {
   return typeof source === "string" ? source : new TextDecoder().decode(source);
 }
@@ -86,6 +97,14 @@ export function singleHtml(): Plugin {
           },
         );
       }
+
+      if (!/<\/head>/iu.test(html)) {
+        this.error("단일 HTML에 head 닫기 태그가 없습니다.");
+      }
+      html = html.replace(
+        /<\/head>/iu,
+        `<meta http-equiv="Content-Security-Policy" content="${RELEASE_CSP}" />\n</head>`,
+      );
 
       const externalOutputs = Object.values(bundle).filter(
         (item) =>

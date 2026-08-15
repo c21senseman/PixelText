@@ -1,5 +1,5 @@
 import { ChunkKey, SerializedChunk, SparseDocument } from "./document";
-import { ImportedDocument } from "./io";
+import { ImportedDocument, parseBookmarks } from "./io";
 import { Bookmark, Camera, MAX_ZOOM, MIN_ZOOM } from "./types";
 
 const DATABASE_NAME = "pixeltext-canvas";
@@ -80,7 +80,7 @@ export class IndexedDocumentStorage {
     const camera = isStoredCamera(meta?.camera)
       ? meta.camera
       : { x: 0, y: 0, zoom: 1 };
-    const bookmarks = Array.isArray(meta?.bookmarks) ? meta.bookmarks : [];
+    const bookmarks = meta ? parseBookmarks(meta.bookmarks) : [];
     return { document, camera, bookmarks };
   }
 
@@ -135,4 +135,3 @@ function isStoredCamera(camera: unknown): camera is Camera {
     value.zoom <= MAX_ZOOM
   );
 }
-

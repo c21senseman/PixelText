@@ -1,6 +1,12 @@
 node_modules/
 dist/
+coverage/
+.vite/
+.agents/
+.codex/
 *.log
 .env
 .env.*
 !.env.example
+.npmrc
+.DS_Store

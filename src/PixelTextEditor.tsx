@@ -15,7 +15,12 @@ import {
 import { EditorModel, SelectionResizeEdge } from "@/lib/editor";
 import { SparseDocument } from "@/lib/document";
 import { segmentGraphemes } from "@/lib/graphemes";
-import { exportJson, exportTxt, importJson } from "@/lib/io";
+import {
+  assertImportFileSize,
+  exportJson,
+  exportTxt,
+  importJson,
+} from "@/lib/io";
 import {
   MAX_MINIMAP_ZOOM,
   MIN_MINIMAP_ZOOM,
@@ -1083,6 +1088,7 @@ export default function PixelTextEditor() {
     event.target.value = "";
     if (!file) return;
     try {
+      assertImportFileSize(file.size);
       const imported = importJson(await file.text());
       editor.replaceDocument(imported.document, imported.bookmarks);
       setCamera(imported.camera);
