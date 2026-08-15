@@ -21,6 +21,7 @@ import {
   MIN_MINIMAP_ZOOM,
   MinimapTransform,
   cellMetrics,
+  clampMinimapTarget,
   clampMinimapZoom,
   drawEditorCanvas,
   drawMinimap,
@@ -1129,7 +1130,10 @@ export default function PixelTextEditor() {
     focusInput();
   };
 
-  const handleMinimapPointer = (event: PointerEvent<HTMLCanvasElement>) => {
+  const handleMinimapPointer = (
+    event: PointerEvent<HTMLCanvasElement>,
+    constrainToContent = false,
+  ) => {
     const transform = minimapTransformRef.current;
     if (!transform) return;
     const rect = event.currentTarget.getBoundingClientRect();
@@ -1138,7 +1142,11 @@ export default function PixelTextEditor() {
       event.clientY - rect.top,
       transform,
     );
-    setCamera({ ...cameraRef.current, x: world.x, y: world.y });
+    const contentBounds = constrainToContent ? editor.document.bounds() : null;
+    const target = contentBounds
+      ? clampMinimapTarget(world, contentBounds)
+      : world;
+    setCamera({ ...cameraRef.current, x: target.x, y: target.y });
   };
 
   const selectionSize = editor.selection
@@ -1517,7 +1525,7 @@ export default function PixelTextEditor() {
               handleMinimapPointer(event);
             }}
             onPointerMove={(event) => {
-              if (minimapDraggingRef.current) handleMinimapPointer(event);
+              if (minimapDraggingRef.current) handleMinimapPointer(event, true);
             }}
             onPointerUp={(event) => {
               minimapDraggingRef.current = false;

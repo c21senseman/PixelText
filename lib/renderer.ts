@@ -543,8 +543,6 @@ function drawSelection(
 export type MinimapTransform = {
   worldMinX: number;
   worldMinY: number;
-  worldMaxX: number;
-  worldMaxY: number;
   scale: number;
   offsetX: number;
   offsetY: number;
@@ -558,30 +556,10 @@ export function clampMinimapZoom(zoom: number): number {
   return Math.min(MAX_MINIMAP_ZOOM, Math.max(MIN_MINIMAP_ZOOM, zoom));
 }
 
-export function minimapBaseBounds(
-  contentBounds: Bounds | null,
-  viewBounds: Selection,
-): Bounds {
-  if (!contentBounds) {
-    return {
-      minX: viewBounds.x1,
-      minY: viewBounds.y1,
-      maxX: viewBounds.x2,
-      maxY: viewBounds.y2,
-    };
-  }
-
-  const contentWidth = Math.max(1, contentBounds.maxX - contentBounds.minX);
-  const contentHeight = Math.max(1, contentBounds.maxY - contentBounds.minY);
-  const margin = Math.min(
-    64,
-    Math.max(4, Math.ceil(Math.max(contentWidth, contentHeight) * 0.06)),
-  );
+export function clampMinimapTarget(target: Position, bounds: Bounds): Position {
   return {
-    minX: contentBounds.minX - margin,
-    minY: contentBounds.minY - margin,
-    maxX: contentBounds.maxX + margin,
-    maxY: contentBounds.maxY + margin,
+    x: Math.min(bounds.maxX - 1, Math.max(bounds.minX, target.x)),
+    y: Math.min(bounds.maxY - 1, Math.max(bounds.minY, target.y)),
   };
 }
 
@@ -598,11 +576,23 @@ export function drawMinimap(
   context.clearRect(0, 0, viewport.width, viewport.height);
 
   const viewBounds = viewportCellBounds(camera, editorViewport);
-  const baseBounds = minimapBaseBounds(document.bounds(), viewBounds);
-  const baseMinX = baseBounds.minX;
-  const baseMinY = baseBounds.minY;
-  const baseMaxX = baseBounds.maxX;
-  const baseMaxY = baseBounds.maxY;
+  const contentBounds = document.bounds();
+  let baseMinX = viewBounds.x1;
+  let baseMinY = viewBounds.y1;
+  let baseMaxX = viewBounds.x2;
+  let baseMaxY = viewBounds.y2;
+  if (contentBounds) {
+    const contentWidth = Math.max(1, contentBounds.maxX - contentBounds.minX);
+    const contentHeight = Math.max(1, contentBounds.maxY - contentBounds.minY);
+    const margin = Math.min(
+      64,
+      Math.max(4, Math.ceil(Math.max(contentWidth, contentHeight) * 0.06)),
+    );
+    baseMinX = Math.min(viewBounds.x1, contentBounds.minX - margin);
+    baseMinY = Math.min(viewBounds.y1, contentBounds.minY - margin);
+    baseMaxX = Math.max(viewBounds.x2, contentBounds.maxX + margin);
+    baseMaxY = Math.max(viewBounds.y2, contentBounds.maxY + margin);
+  }
 
   const chunkKeys = document.chunkKeys();
 
@@ -692,16 +682,7 @@ export function drawMinimap(
   context.strokeRect(cameraX + 0.75, cameraY + 0.75, cameraWidth - 1.5, cameraHeight - 1.5);
   context.restore();
 
-  return {
-    worldMinX,
-    worldMinY,
-    worldMaxX,
-    worldMaxY,
-    scale,
-    offsetX,
-    offsetY,
-    padding,
-  };
+  return { worldMinX, worldMinY, scale, offsetX, offsetY, padding };
 }
 
 export function minimapToWorld(
@@ -710,19 +691,7 @@ export function minimapToWorld(
   transform: MinimapTransform,
 ): Position {
   return {
-    x: Math.min(
-      transform.worldMaxX,
-      Math.max(
-        transform.worldMinX,
-        transform.worldMinX + (x - transform.offsetX) / transform.scale,
-      ),
-    ),
-    y: Math.min(
-      transform.worldMaxY,
-      Math.max(
-        transform.worldMinY,
-        transform.worldMinY + (y - transform.offsetY) / transform.scale,
-      ),
-    ),
+    x: transform.worldMinX + (x - transform.offsetX) / transform.scale,
+    y: transform.worldMinY + (y - transform.offsetY) / transform.scale,
   };
 }
