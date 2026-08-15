@@ -280,6 +280,25 @@ export class EditorModel {
     }
   }
 
+  private pullTextRunLeft(
+    transaction: Transaction,
+    startX: number,
+    y: number,
+  ): void {
+    let endX = startX;
+    while (transaction.isTextCell(endX, y)) {
+      if (endX === Number.MAX_SAFE_INTEGER) break;
+      endX += 1;
+    }
+    if (!transaction.isTextCell(endX, y)) endX -= 1;
+
+    for (let sourceX = startX; sourceX <= endX; sourceX += 1) {
+      transaction.set(sourceX - 1, y, transaction.get(sourceX, y));
+      if (sourceX === Number.MAX_SAFE_INTEGER) break;
+    }
+    transaction.set(endX, y, null);
+  }
+
   backspace(): void {
     const before = snapshotState(this.cursor, this.selection);
     const transaction = new Transaction(this.document);
@@ -304,6 +323,8 @@ export class EditorModel {
         this.cursor.y,
         joinsTwoSpaces ? 2 : 1,
       );
+    } else if (transaction.get(this.cursor.x, this.cursor.y) !== null) {
+      this.pullTextRunLeft(transaction, this.cursor.x, this.cursor.y);
     }
     this.commit(transaction, before, { x: targetX, y: this.cursor.y }, null);
   }

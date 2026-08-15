@@ -73,6 +73,33 @@ test("backspace and delete pull through a one-cell text gap", () => {
   assert.equal(editor.document.getCell(2, 0), null);
 });
 
+test("backspace at a character's left edge pulls its text run left", () => {
+  const editor = new EditorModel();
+  editor.insertText("A  BC");
+  editor.setCursor({ x: 3, y: 0 });
+
+  editor.backspace();
+  assert.equal(editor.document.getCell(0, 0), "A");
+  assert.equal(editor.document.getCell(1, 0), null);
+  assert.equal(editor.document.getCell(2, 0), "B");
+  assert.equal(editor.document.getCell(3, 0), "C");
+  assert.equal(editor.document.getCell(4, 0), null);
+  assert.deepEqual(editor.cursor, { x: 2, y: 0 });
+
+  editor.backspace();
+  assert.equal(editor.document.getCell(0, 0), "A");
+  assert.equal(editor.document.getCell(1, 0), "B");
+  assert.equal(editor.document.getCell(2, 0), "C");
+  assert.equal(editor.document.getCell(3, 0), null);
+  assert.deepEqual(editor.cursor, { x: 1, y: 0 });
+
+  editor.undo();
+  assert.equal(editor.document.getCell(1, 0), null);
+  assert.equal(editor.document.getCell(2, 0), "B");
+  assert.equal(editor.document.getCell(3, 0), "C");
+  assert.deepEqual(editor.cursor, { x: 2, y: 0 });
+});
+
 test("each typed space advances through empty cells", () => {
   const blankEditor = new EditorModel();
   blankEditor.insertText(" ");
