@@ -555,7 +555,6 @@ export default function PixelTextEditor() {
     if (event.button === 1) {
       event.preventDefault();
       finishCompositionBeforeCommand();
-      focusInput();
       event.currentTarget.setPointerCapture(event.pointerId);
       dragRef.current = {
         kind: "pan",
