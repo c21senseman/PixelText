@@ -623,6 +623,33 @@ test("pushed target sentences move colliding blocks in a chain", () => {
   assert.equal(editor.document.getCell(13, 0), "T");
 });
 
+test("text blocks bridge one vertical gap only in the same column", () => {
+  const aligned = new EditorModel();
+  aligned.document.setCell(-2, 0, "S");
+  aligned.document.setCell(0, 0, "A");
+  aligned.document.setCell(0, 2, "B");
+  aligned.setSelection({ x1: -2, y1: 0, x2: -1, y2: 1 });
+
+  aligned.moveSelection(2, 0);
+
+  assert.equal(aligned.document.getCell(0, 0), "S");
+  assert.equal(aligned.document.getCell(1, 0), "A");
+  assert.equal(aligned.document.getCell(1, 2), "B");
+
+  const offset = new EditorModel();
+  offset.document.setCell(-2, 0, "S");
+  offset.document.setCell(0, 0, "A");
+  offset.document.setCell(1, 2, "B");
+  offset.setSelection({ x1: -2, y1: 0, x2: -1, y2: 1 });
+
+  offset.moveSelection(2, 0);
+
+  assert.equal(offset.document.getCell(0, 0), "S");
+  assert.equal(offset.document.getCell(1, 0), "A");
+  assert.equal(offset.document.getCell(1, 2), "B");
+  assert.equal(offset.document.getCell(2, 2), null);
+});
+
 test("pushed text blocks stay intact while crossing the cleared source", () => {
   const editor = new EditorModel();
   editor.document.setCell(0, 0, "S");

@@ -94,6 +94,17 @@ class Transaction {
     );
   }
 
+  isVerticalBlockGap(x: number, y: number): boolean {
+    assertSafePosition({ x, y });
+    return (
+      this.get(x, y) === null &&
+      y > Number.MIN_SAFE_INTEGER &&
+      y < Number.MAX_SAFE_INTEGER &&
+      this.get(x, y - 1) !== null &&
+      this.get(x, y + 1) !== null
+    );
+  }
+
   isTextCell(x: number, y: number): boolean {
     return this.get(x, y) !== null || this.isInterCharacterSpace(x, y);
   }
@@ -765,11 +776,12 @@ export class EditorModel {
       visited.add(key);
 
       const value = transaction.get(position.x, position.y);
-      const isPreservedSpace =
+      const isPreservedGap =
         value === null &&
         !clearedPath.has(key) &&
-        transaction.isInterCharacterSpace(position.x, position.y);
-      if (value === null && !isPreservedSpace) continue;
+        (transaction.isInterCharacterSpace(position.x, position.y) ||
+          transaction.isVerticalBlockGap(position.x, position.y));
+      if (value === null && !isPreservedGap) continue;
       if (value !== null) {
         block.set(key, { ...position, value });
       }
