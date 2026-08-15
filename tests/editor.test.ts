@@ -73,12 +73,14 @@ test("backspace and delete pull through a one-cell text gap", () => {
   assert.equal(editor.document.getCell(2, 0), null);
 });
 
-test("typed spaces create blanks, keep one separator, and reject repeats", () => {
+test("each typed space advances through empty cells", () => {
   const blankEditor = new EditorModel();
-  blankEditor.insertText("  ");
+  blankEditor.insertText(" ");
+  blankEditor.insertText(" ");
+  blankEditor.insertText(" ");
   assert.equal(blankEditor.document.cellCount, 0);
   assert.equal(blankEditor.document.chunkCount, 0);
-  assert.deepEqual(blankEditor.cursor, { x: 1, y: 0 });
+  assert.deepEqual(blankEditor.cursor, { x: 3, y: 0 });
 
   const editor = new EditorModel();
   editor.insertText("A");
@@ -89,29 +91,30 @@ test("typed spaces create blanks, keep one separator, and reject repeats", () =>
   assert.deepEqual(editor.cursor, { x: 2, y: 0 });
 
   editor.insertText(" ");
-  assert.deepEqual(editor.cursor, { x: 2, y: 0 });
+  assert.deepEqual(editor.cursor, { x: 3, y: 0 });
 
   editor.insertText("B");
-  assert.equal(editor.document.getCell(2, 0), "B");
-  assert.equal(editor.document.getTextCell(1, 0), " ");
-  assert.equal(editor.document.cellCount, 3);
-  assert.deepEqual(editor.search("A B"), [{ x: 0, y: 0 }]);
+  assert.equal(editor.document.getCell(3, 0), "B");
+  assert.equal(editor.document.getTextCell(1, 0), null);
+  assert.equal(editor.document.getTextCell(2, 0), null);
+  assert.equal(editor.document.cellCount, 2);
+  assert.deepEqual(editor.search("A B"), []);
   assert.deepEqual(editor.search("A  B"), []);
 });
 
-test("pasted repeated spaces are reduced to one empty separator cell", () => {
+test("pasted repeated spaces preserve empty-cell distance", () => {
   const editor = new EditorModel();
   editor.insertText("A  B");
 
   assert.equal(editor.document.getCell(0, 0), "A");
   assert.equal(editor.document.getCell(1, 0), null);
-  assert.equal(editor.document.getCell(2, 0), "B");
-  assert.equal(editor.document.getCell(3, 0), null);
-  assert.equal(editor.document.cellCount, 3);
-  assert.deepEqual(editor.cursor, { x: 3, y: 0 });
+  assert.equal(editor.document.getCell(2, 0), null);
+  assert.equal(editor.document.getCell(3, 0), "B");
+  assert.equal(editor.document.cellCount, 2);
+  assert.deepEqual(editor.cursor, { x: 4, y: 0 });
 });
 
-test("editing an existing separator never creates a double space", () => {
+test("spaces can extend an existing separator to multiple empty cells", () => {
   const editor = new EditorModel();
   editor.insertText("A B C");
   editor.setCursor({ x: 2, y: 0 });
@@ -127,6 +130,25 @@ test("editing an existing separator never creates a double space", () => {
   editor.insertText(" ");
   assert.deepEqual(editor.cursor, { x: 2, y: 0 });
   assert.deepEqual(editor.search("A C"), [{ x: 0, y: 0 }]);
+
+  editor.insertText(" ");
+  assert.deepEqual(editor.cursor, { x: 3, y: 0 });
+  assert.equal(editor.document.getCell(2, 0), null);
+  assert.equal(editor.document.getCell(3, 0), "C");
+  assert.deepEqual(editor.search("A C"), []);
+});
+
+test("repeated spaces inserted inside text shift it by every cell", () => {
+  const editor = new EditorModel();
+  editor.insertText("AB");
+  editor.setCursor({ x: 1, y: 0 });
+  editor.insertText("  ");
+
+  assert.equal(editor.document.getCell(0, 0), "A");
+  assert.equal(editor.document.getCell(1, 0), null);
+  assert.equal(editor.document.getCell(2, 0), null);
+  assert.equal(editor.document.getCell(3, 0), "B");
+  assert.deepEqual(editor.cursor, { x: 3, y: 0 });
 });
 
 test("multiline paste inserts each row independently", () => {

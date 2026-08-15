@@ -92,7 +92,6 @@ export class EditorModel {
   private undoStack: HistoryBatch[] = [];
   private redoStack: HistoryBatch[] = [];
   private readonly listeners = new Set<EditorListener>();
-  private lastInputWasSpace = false;
 
   constructor(document = new SparseDocument()) {
     this.document = document;
@@ -117,7 +116,6 @@ export class EditorModel {
 
   setCursor(position: Position, clearSelection = true): void {
     assertSafePosition(position);
-    this.lastInputWasSpace = false;
     this.cursor = { ...position };
     if (clearSelection) this.selection = null;
     this.emit();
@@ -131,7 +129,6 @@ export class EditorModel {
   }
 
   setSelection(selection: Selection | null): void {
-    this.lastInputWasSpace = false;
     if (!selection) {
       this.selection = null;
       this.emit();
@@ -212,12 +209,6 @@ export class EditorModel {
     if (transaction.isInterCharacterSpace(position.x, position.y)) {
       return { x: safeAdd(position.x, 1), y: position.y };
     }
-    if (
-      position.x > Number.MIN_SAFE_INTEGER &&
-      transaction.isInterCharacterSpace(position.x - 1, position.y)
-    ) {
-      return position;
-    }
 
     const nextCursor = { x: safeAdd(position.x, 1), y: position.y };
     let end = position.x;
@@ -246,28 +237,21 @@ export class EditorModel {
     const selectionStart = this.clearSelectionInTransaction(transaction);
     const start = selectionStart ?? this.cursor;
     let finalCursor = { ...start };
-    let previousWasSpace = selectionStart ? false : this.lastInputWasSpace;
 
     for (let row = 0; row < segmentedLines.length; row += 1) {
       const y = safeAdd(start.y, row);
       let lineCursor: Position = { x: start.x, y };
-      if (row > 0) previousWasSpace = false;
       for (const grapheme of segmentedLines[row]) {
         if (grapheme === " ") {
-          if (!previousWasSpace) {
-            lineCursor = this.insertBlank(transaction, lineCursor);
-          }
-          previousWasSpace = true;
+          lineCursor = this.insertBlank(transaction, lineCursor);
         } else {
           lineCursor = this.insertOne(transaction, lineCursor, grapheme);
-          previousWasSpace = false;
         }
       }
       finalCursor = lineCursor;
     }
 
     this.commit(transaction, before, finalCursor, null);
-    this.lastInputWasSpace = previousWasSpace;
   }
 
   private deleteAndPull(
@@ -297,7 +281,6 @@ export class EditorModel {
   }
 
   backspace(): void {
-    this.lastInputWasSpace = false;
     const before = snapshotState(this.cursor, this.selection);
     const transaction = new Transaction(this.document);
     const selectionStart = this.clearSelectionInTransaction(transaction);
@@ -326,7 +309,6 @@ export class EditorModel {
   }
 
   deleteForward(): void {
-    this.lastInputWasSpace = false;
     const before = snapshotState(this.cursor, this.selection);
     const transaction = new Transaction(this.document);
     const selectionStart = this.clearSelectionInTransaction(transaction);
@@ -352,7 +334,6 @@ export class EditorModel {
   }
 
   enter(): void {
-    this.lastInputWasSpace = false;
     const before = snapshotState(this.cursor, this.selection);
     const transaction = new Transaction(this.document);
     const selectionStart = this.clearSelectionInTransaction(transaction);
@@ -472,7 +453,6 @@ export class EditorModel {
   }
 
   deleteSelection(): void {
-    this.lastInputWasSpace = false;
     if (!this.selection) return;
     const before = snapshotState(this.cursor, this.selection);
     const transaction = new Transaction(this.document);
@@ -481,7 +461,6 @@ export class EditorModel {
   }
 
   moveSelection(dx: number, dy: number): void {
-    this.lastInputWasSpace = false;
     const selection = this.selection;
     if (!selection || (dx === 0 && dy === 0)) return;
     const target: Selection = {
@@ -596,7 +575,6 @@ export class EditorModel {
 
   navigateSearch(direction: 1 | -1): SearchResult | null {
     if (this.searchResults.length === 0) return null;
-    this.lastInputWasSpace = false;
     this.searchIndex =
       (this.searchIndex + direction + this.searchResults.length) %
       this.searchResults.length;
@@ -632,7 +610,6 @@ export class EditorModel {
   }
 
   undo(): void {
-    this.lastInputWasSpace = false;
     const batch = this.undoStack.pop();
     if (!batch) return;
     for (const change of batch.changes) {
@@ -647,7 +624,6 @@ export class EditorModel {
   }
 
   redo(): void {
-    this.lastInputWasSpace = false;
     const batch = this.redoStack.pop();
     if (!batch) return;
     for (const change of batch.changes) {
@@ -666,7 +642,6 @@ export class EditorModel {
     bookmarks: Bookmark[],
     cursor: Position = { x: 0, y: 0 },
   ): void {
-    this.lastInputWasSpace = false;
     const deletedKeys = this.document.chunkKeys();
     this.document = document;
     this.document.markAllDirty(deletedKeys);
@@ -685,7 +660,6 @@ export class EditorModel {
     bookmarks: Bookmark[],
     cursor: Position = { x: 0, y: 0 },
   ): void {
-    this.lastInputWasSpace = false;
     this.document = document;
     this.bookmarks = bookmarks.map((bookmark) => ({ ...bookmark }));
     this.cursor = { ...cursor };

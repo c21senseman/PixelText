@@ -122,7 +122,7 @@ export default function PixelTextEditor() {
   const minimapDraggingRef = useRef(false);
   const minimapTransformRef = useRef<MinimapTransform | null>(null);
   const spacePressedRef = useRef(false);
-  const pendingSpaceRef = useRef(false);
+  const pendingSpaceCountRef = useRef(0);
   const composingRef = useRef(false);
   const compositionRef = useRef("");
   const ignoreCompositionEndRef = useRef(false);
@@ -472,9 +472,10 @@ export default function PixelTextEditor() {
   const handleKeyUp = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.code !== "Space") return;
     spacePressedRef.current = false;
-    if (pendingSpaceRef.current) {
-      pendingSpaceRef.current = false;
-      runAction(() => editor.insertText(" "));
+    if (pendingSpaceCountRef.current > 0) {
+      const count = pendingSpaceCountRef.current;
+      pendingSpaceCountRef.current = 0;
+      runAction(() => editor.insertText(" ".repeat(count)));
       if (textareaRef.current) textareaRef.current.value = "";
     }
   };
@@ -484,7 +485,7 @@ export default function PixelTextEditor() {
     if (composingRef.current || inputEvent.isComposing) return;
     if (inputEvent.inputType === "insertText" && inputEvent.data === " ") {
       event.preventDefault();
-      pendingSpaceRef.current = true;
+      pendingSpaceCountRef.current += 1;
       return;
     }
     if (inputEvent.inputType === "insertLineBreak") {
@@ -509,7 +510,7 @@ export default function PixelTextEditor() {
     const value = event.currentTarget.value || nativeEvent.data || "";
     event.currentTarget.value = "";
     if (!value) return;
-    if (pendingSpaceRef.current && value === " ") return;
+    if (pendingSpaceCountRef.current > 0 && value === " ") return;
     if (suppressInputRef.current && value === suppressInputRef.current) {
       suppressInputRef.current = "";
       return;
@@ -588,7 +589,7 @@ export default function PixelTextEditor() {
     event.currentTarget.setPointerCapture(event.pointerId);
 
     if (spacePressedRef.current) {
-      pendingSpaceRef.current = false;
+      pendingSpaceCountRef.current = 0;
       dragRef.current = {
         kind: "pan",
         pointerId: event.pointerId,
