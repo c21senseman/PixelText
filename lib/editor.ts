@@ -623,7 +623,18 @@ export class EditorModel {
 
     if (targetWidth === sourceWidth) return;
 
-    const flow: Array<string | null> = [];
+    if (targetWidth > sourceWidth) {
+      assertTextRasterSize(targetWidth, sourceHeight);
+      this.selection = {
+        ...selection,
+        x1: targetX1,
+        x2: targetX2,
+      };
+      this.emit();
+      return;
+    }
+
+    const lines: Array<Array<string | null>> = [];
     for (let y = selection.y1; y < selection.y2; y += 1) {
       const row: Array<string | null> = [];
       let lastOccupied = -1;
@@ -632,11 +643,15 @@ export class EditorModel {
         row.push(value);
         if (value !== null) lastOccupied = offset;
       }
-      if (lastOccupied >= 0) flow.push(...row.slice(0, lastOccupied + 1));
+      lines.push(lastOccupied >= 0 ? row.slice(0, lastOccupied + 1) : []);
       if (y === Number.MAX_SAFE_INTEGER) break;
     }
 
-    const targetHeight = Math.max(1, Math.ceil(flow.length / targetWidth));
+    const targetHeight = lines.reduce(
+      (height, line) =>
+        height + Math.max(1, Math.ceil(line.length / targetWidth)),
+      0,
+    );
     assertTextRasterSize(targetWidth, targetHeight);
     const target: Selection = {
       x1: targetX1,
@@ -661,14 +676,21 @@ export class EditorModel {
       target.y2,
       (x, y) => transaction.set(x, y, null),
     );
-    for (let index = 0; index < flow.length; index += 1) {
-      const value = flow[index];
-      if (value === null) continue;
-      transaction.set(
-        safeAdd(target.x1, index % targetWidth),
-        safeAdd(target.y1, Math.floor(index / targetWidth)),
-        value,
-      );
+    let targetRow = 0;
+    for (const line of lines) {
+      for (let index = 0; index < line.length; index += 1) {
+        const value = line[index];
+        if (value === null) continue;
+        transaction.set(
+          safeAdd(target.x1, index % targetWidth),
+          safeAdd(
+            target.y1,
+            targetRow + Math.floor(index / targetWidth),
+          ),
+          value,
+        );
+      }
+      targetRow += Math.max(1, Math.ceil(line.length / targetWidth));
     }
 
     this.commit(transaction, before, { x: target.x1, y: target.y1 }, target);

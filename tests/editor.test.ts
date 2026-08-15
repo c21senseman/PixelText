@@ -346,7 +346,7 @@ test("moving an overlapping rectangular selection uses a snapshot", () => {
   assert.deepEqual(editor.selection, { x1: 1, y1: 0, x2: 4, y2: 1 });
 });
 
-test("horizontal selection resize wraps and unwraps content", () => {
+test("horizontal selection resize wraps only when shrinking", () => {
   const editor = new EditorModel();
   editor.insertText("ABCDEFGH");
   editor.setSelection({ x1: 0, y1: 0, x2: 8, y2: 1 });
@@ -357,14 +357,40 @@ test("horizontal selection resize wraps and unwraps content", () => {
   assert.deepEqual(editor.cursor, { x: 0, y: 0 });
 
   editor.resizeSelectionHorizontal("right", 8);
-  assert.equal(editor.copySelection(), "ABCDEFGH");
-  assert.deepEqual(editor.selection, { x1: 0, y1: 0, x2: 8, y2: 1 });
+  assert.equal(editor.copySelection(), "ABC     \nDEF     \nGH      ");
+  assert.deepEqual(editor.selection, { x1: 0, y1: 0, x2: 8, y2: 3 });
 
   editor.undo();
+  assert.equal(editor.copySelection(), "ABCDEFGH");
+  assert.deepEqual(editor.selection, { x1: 0, y1: 0, x2: 8, y2: 1 });
+  editor.redo();
   assert.equal(editor.copySelection(), "ABC\nDEF\nGH ");
   assert.deepEqual(editor.selection, { x1: 0, y1: 0, x2: 3, y2: 3 });
-  editor.redo();
-  assert.equal(editor.copySelection(), "ABCDEFGH");
+});
+
+test("horizontal selection shrink preserves existing line breaks", () => {
+  const editor = new EditorModel();
+  for (const [x, y, value] of [
+    [0, 0, "A"],
+    [1, 0, "B"],
+    [2, 0, "C"],
+    [3, 0, "D"],
+    [4, 0, "E"],
+    [0, 1, "F"],
+    [1, 1, "G"],
+    [0, 3, "H"],
+    [1, 3, "I"],
+    [2, 3, "J"],
+    [3, 3, "K"],
+  ] as const) {
+    editor.document.setCell(x, y, value);
+  }
+  editor.setSelection({ x1: 0, y1: 0, x2: 5, y2: 4 });
+
+  editor.resizeSelectionHorizontal("right", 3);
+
+  assert.equal(editor.copySelection(), "ABC\nDE \nFG \n   \nHIJ\nK  ");
+  assert.deepEqual(editor.selection, { x1: 0, y1: 0, x2: 3, y2: 6 });
 });
 
 test("left selection edge stays anchored on the right while reflowing", () => {
@@ -382,10 +408,12 @@ test("left selection edge stays anchored on the right while reflowing", () => {
   assert.equal(editor.document.getCell(9, 3), "F");
 
   editor.resizeSelectionHorizontal("left", 4);
-  assert.deepEqual(editor.selection, { x1: 4, y1: 2, x2: 10, y2: 3 });
-  assert.equal(editor.document.getCell(4, 2), "A");
-  assert.equal(editor.document.getCell(9, 2), "F");
-  assert.equal(editor.document.getCell(7, 3), null);
+  assert.deepEqual(editor.selection, { x1: 4, y1: 2, x2: 10, y2: 4 });
+  assert.equal(editor.document.getCell(4, 2), null);
+  assert.equal(editor.document.getCell(7, 2), "A");
+  assert.equal(editor.document.getCell(9, 2), "C");
+  assert.equal(editor.document.getCell(7, 3), "D");
+  assert.equal(editor.document.getCell(9, 3), "F");
 });
 
 test("horizontal selection resize rejects a zero-width target", () => {
