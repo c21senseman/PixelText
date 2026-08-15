@@ -346,6 +346,60 @@ test("moving an overlapping rectangular selection uses a snapshot", () => {
   assert.deepEqual(editor.selection, { x1: 1, y1: 0, x2: 4, y2: 1 });
 });
 
+test("horizontal selection resize wraps and unwraps content", () => {
+  const editor = new EditorModel();
+  editor.insertText("ABCDEFGH");
+  editor.setSelection({ x1: 0, y1: 0, x2: 8, y2: 1 });
+
+  editor.resizeSelectionHorizontal("right", 3);
+  assert.equal(editor.copySelection(), "ABC\nDEF\nGH ");
+  assert.deepEqual(editor.selection, { x1: 0, y1: 0, x2: 3, y2: 3 });
+  assert.deepEqual(editor.cursor, { x: 0, y: 0 });
+
+  editor.resizeSelectionHorizontal("right", 8);
+  assert.equal(editor.copySelection(), "ABCDEFGH");
+  assert.deepEqual(editor.selection, { x1: 0, y1: 0, x2: 8, y2: 1 });
+
+  editor.undo();
+  assert.equal(editor.copySelection(), "ABC\nDEF\nGH ");
+  assert.deepEqual(editor.selection, { x1: 0, y1: 0, x2: 3, y2: 3 });
+  editor.redo();
+  assert.equal(editor.copySelection(), "ABCDEFGH");
+});
+
+test("left selection edge stays anchored on the right while reflowing", () => {
+  const editor = new EditorModel();
+  editor.setCursor({ x: 4, y: 2 });
+  editor.insertText("ABCDEF");
+  editor.setSelection({ x1: 4, y1: 2, x2: 10, y2: 3 });
+
+  editor.resizeSelectionHorizontal("left", 7);
+  assert.deepEqual(editor.selection, { x1: 7, y1: 2, x2: 10, y2: 4 });
+  assert.equal(editor.document.getCell(4, 2), null);
+  assert.equal(editor.document.getCell(7, 2), "A");
+  assert.equal(editor.document.getCell(9, 2), "C");
+  assert.equal(editor.document.getCell(7, 3), "D");
+  assert.equal(editor.document.getCell(9, 3), "F");
+
+  editor.resizeSelectionHorizontal("left", 4);
+  assert.deepEqual(editor.selection, { x1: 4, y1: 2, x2: 10, y2: 3 });
+  assert.equal(editor.document.getCell(4, 2), "A");
+  assert.equal(editor.document.getCell(9, 2), "F");
+  assert.equal(editor.document.getCell(7, 3), null);
+});
+
+test("horizontal selection resize rejects a zero-width target", () => {
+  const editor = new EditorModel();
+  editor.insertText("ABC");
+  editor.setSelection({ x1: 0, y1: 0, x2: 3, y2: 1 });
+
+  assert.throws(
+    () => editor.resizeSelectionHorizontal("right", 0),
+    /한 칸 이상/,
+  );
+  assert.equal(editor.copySelection(), "ABC");
+});
+
 test("copy preserves empty cells and search includes one-cell separators", () => {
   const editor = new EditorModel();
   editor.document.setCell(0, 0, "A");

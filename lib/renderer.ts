@@ -34,6 +34,7 @@ export type DrawEditorOptions = {
   activeSearchIndex: number;
   searchLength: number;
   selectionPreview?: SelectionPreview | null;
+  selectionResizePreview?: Selection | null;
 };
 
 export function cellMetrics(camera: Camera): { width: number; height: number } {
@@ -143,7 +144,7 @@ export function drawEditorCanvas(
 
   if (options.selection) {
     const preview = options.selectionPreview ?? { dx: 0, dy: 0 };
-    if (options.selectionPreview) {
+    if (options.selectionPreview || options.selectionResizePreview) {
       drawSelection(
         context,
         options.selection,
@@ -156,17 +157,18 @@ export function drawEditorCanvas(
     }
     drawSelection(
       context,
-      {
-        x1: options.selection.x1 + preview.dx,
-        y1: options.selection.y1 + preview.dy,
-        x2: options.selection.x2 + preview.dx,
-        y2: options.selection.y2 + preview.dy,
-      },
+      options.selectionResizePreview ?? {
+          x1: options.selection.x1 + preview.dx,
+          y1: options.selection.y1 + preview.dy,
+          x2: options.selection.x2 + preview.dx,
+          y2: options.selection.y2 + preview.dy,
+        },
       options.camera,
       viewport,
       visible,
       "rgba(92, 105, 246, 0.16)",
       "rgba(77, 91, 229, 0.7)",
+      true,
     );
   }
 
@@ -257,6 +259,7 @@ function drawSelection(
   visible: Selection,
   fill: string,
   stroke: string,
+  resizable = false,
 ): void {
   const clipped = {
     x1: Math.max(selection.x1, visible.x1),
@@ -278,6 +281,45 @@ function drawSelection(
   context.strokeStyle = stroke;
   context.lineWidth = 1;
   context.strokeRect(start.x + 0.5, start.y + 0.5, width - 1, height - 1);
+
+  if (!resizable) return;
+  const top = start.y;
+  const bottom = start.y + height;
+  const centerY = (top + bottom) / 2;
+  const handleHeight = Math.min(22, Math.max(10, height * 0.55));
+  const edgeXs: number[] = [];
+  if (selection.x1 >= visible.x1 && selection.x1 <= visible.x2) {
+    edgeXs.push(logicalToScreen(
+      { x: selection.x1, y: clipped.y1 },
+      camera,
+      viewport,
+    ).x);
+  }
+  if (selection.x2 >= visible.x1 && selection.x2 <= visible.x2) {
+    edgeXs.push(logicalToScreen(
+      { x: selection.x2, y: clipped.y1 },
+      camera,
+      viewport,
+    ).x);
+  }
+  for (const edgeX of edgeXs) {
+    context.strokeStyle = "rgba(77, 91, 229, 0.92)";
+    context.lineWidth = 2;
+    context.beginPath();
+    context.moveTo(edgeX, top + 1);
+    context.lineTo(edgeX, bottom - 1);
+    context.stroke();
+    context.fillStyle = "#ffffff";
+    context.fillRect(edgeX - 2.5, centerY - handleHeight / 2, 5, handleHeight);
+    context.strokeStyle = "#5261e6";
+    context.lineWidth = 1;
+    context.strokeRect(
+      edgeX - 2,
+      centerY - handleHeight / 2 + 0.5,
+      4,
+      handleHeight - 1,
+    );
+  }
 }
 
 export type MinimapTransform = {

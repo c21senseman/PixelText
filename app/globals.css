@@ -203,6 +203,10 @@ input:focus-visible {
   cursor: grabbing;
 }
 
+.editor-canvas.is-resizing-selection {
+  cursor: ew-resize;
+}
+
 .ime-input {
   position: absolute;
   z-index: 3;

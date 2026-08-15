@@ -80,6 +80,7 @@ class Transaction {
 }
 
 export type EditorListener = () => void;
+export type SelectionResizeEdge = "left" | "right";
 
 export class EditorModel {
   document: SparseDocument;
@@ -598,6 +599,78 @@ export class EditorModel {
     for (const cell of snapshot) {
       transaction.set(safeAdd(cell.x, dx), safeAdd(cell.y, dy), cell.value);
     }
+    this.commit(transaction, before, { x: target.x1, y: target.y1 }, target);
+  }
+
+  resizeSelectionHorizontal(
+    edge: SelectionResizeEdge,
+    boundaryX: number,
+  ): void {
+    const selection = this.selection;
+    if (!selection) return;
+    assertSafePosition({ x: boundaryX, y: selection.y1 });
+
+    const targetX1 = edge === "left" ? boundaryX : selection.x1;
+    const targetX2 = edge === "right" ? boundaryX : selection.x2;
+    if (targetX2 <= targetX1) {
+      throw new EditorError("선택 영역의 너비는 한 칸 이상이어야 합니다.");
+    }
+
+    const sourceWidth = safeAdd(selection.x2, -selection.x1);
+    const sourceHeight = safeAdd(selection.y2, -selection.y1);
+    const targetWidth = safeAdd(targetX2, -targetX1);
+    assertTextRasterSize(sourceWidth, sourceHeight);
+
+    if (targetWidth === sourceWidth) return;
+
+    const flow: Array<string | null> = [];
+    for (let y = selection.y1; y < selection.y2; y += 1) {
+      const row: Array<string | null> = [];
+      let lastOccupied = -1;
+      for (let offset = 0; offset < sourceWidth; offset += 1) {
+        const value = this.document.getCell(safeAdd(selection.x1, offset), y);
+        row.push(value);
+        if (value !== null) lastOccupied = offset;
+      }
+      if (lastOccupied >= 0) flow.push(...row.slice(0, lastOccupied + 1));
+      if (y === Number.MAX_SAFE_INTEGER) break;
+    }
+
+    const targetHeight = Math.max(1, Math.ceil(flow.length / targetWidth));
+    assertTextRasterSize(targetWidth, targetHeight);
+    const target: Selection = {
+      x1: targetX1,
+      y1: selection.y1,
+      x2: targetX2,
+      y2: safeAdd(selection.y1, targetHeight),
+    };
+
+    const before = snapshotState(this.cursor, selection);
+    const transaction = new Transaction(this.document);
+    this.document.forEachInRect(
+      selection.x1,
+      selection.y1,
+      selection.x2,
+      selection.y2,
+      (x, y) => transaction.set(x, y, null),
+    );
+    this.document.forEachInRect(
+      target.x1,
+      target.y1,
+      target.x2,
+      target.y2,
+      (x, y) => transaction.set(x, y, null),
+    );
+    for (let index = 0; index < flow.length; index += 1) {
+      const value = flow[index];
+      if (value === null) continue;
+      transaction.set(
+        safeAdd(target.x1, index % targetWidth),
+        safeAdd(target.y1, Math.floor(index / targetWidth)),
+        value,
+      );
+    }
+
     this.commit(transaction, before, { x: target.x1, y: target.y1 }, target);
   }
 
