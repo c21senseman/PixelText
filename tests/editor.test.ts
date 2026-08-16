@@ -893,6 +893,61 @@ test("horizontal selection growth reflows remembered lines as far as they fit", 
   assert.deepEqual(editor.selection, { x1: 0, y1: 0, x2: 5, y2: 2 });
 });
 
+test("insert-mode selection growth pushes an overlapping text block", () => {
+  const editor = new EditorModel();
+  editor.insertText("ABCDEFGH");
+  editor.document.setCell(8, 0, "X");
+  editor.document.setCell(9, 0, "Y");
+  editor.setSelection({ x1: 0, y1: 0, x2: 8, y2: 1 });
+
+  editor.resizeSelectionHorizontal("right", 3);
+  editor.resizeSelectionHorizontal("right", 10);
+
+  assert.equal(editor.copySelection(), "ABCDEFGH  ");
+  assert.equal(editor.document.getCell(10, 0), "X");
+  assert.equal(editor.document.getCell(11, 0), "Y");
+
+  editor.undo();
+  assert.equal(editor.copySelection(), "ABC\nDEF\nGH ");
+  assert.equal(editor.document.getCell(8, 0), "X");
+  assert.equal(editor.document.getCell(9, 0), "Y");
+
+  editor.redo();
+  assert.equal(editor.copySelection(), "ABCDEFGH  ");
+  assert.equal(editor.document.getCell(10, 0), "X");
+  assert.equal(editor.document.getCell(11, 0), "Y");
+});
+
+test("insert-mode selection shrink pushes a block below new wrapped rows", () => {
+  const editor = new EditorModel();
+  editor.insertText("ABCDEF");
+  editor.document.setCell(0, 1, "X");
+  editor.document.setCell(1, 1, "Y");
+  editor.setSelection({ x1: 0, y1: 0, x2: 6, y2: 1 });
+
+  editor.resizeSelectionHorizontal("right", 3);
+
+  assert.equal(editor.copySelection(), "ABC\nDEF");
+  assert.equal(editor.document.getCell(0, 2), "X");
+  assert.equal(editor.document.getCell(1, 2), "Y");
+});
+
+test("overwrite-mode selection growth replaces overlapping text", () => {
+  const editor = new EditorModel();
+  editor.insertText("ABCDEFGH");
+  editor.document.setCell(8, 0, "X");
+  editor.document.setCell(9, 0, "Y");
+  editor.setSelection({ x1: 0, y1: 0, x2: 8, y2: 1 });
+  editor.toggleOverwriteMode();
+
+  editor.resizeSelectionHorizontal("right", 3);
+  editor.resizeSelectionHorizontal("right", 10);
+
+  assert.equal(editor.copySelection(), "ABCDEFGH  ");
+  assert.equal(editor.document.getCell(10, 0), null);
+  assert.equal(editor.document.getCell(11, 0), null);
+});
+
 test("clearing a selection forgets its remembered line breaks", () => {
   const editor = new EditorModel();
   editor.insertText("ABCDEFGH");

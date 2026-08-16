@@ -1151,13 +1151,25 @@ export class EditorModel {
       selection.y2,
       (x, y) => transaction.set(x, y, null),
     );
-    this.document.forEachInRect(
-      target.x1,
-      target.y1,
-      target.x2,
-      target.y2,
-      (x, y) => transaction.set(x, y, null),
-    );
+    if (this.overwriteMode) {
+      this.document.forEachInRect(
+        target.x1,
+        target.y1,
+        target.x2,
+        target.y2,
+        (x, y) => transaction.set(x, y, null),
+      );
+    } else {
+      const pushDirection = targetWidth < sourceWidth
+        ? { x: 0, y: 1 }
+        : { x: edge === "left" ? -1 : 1, y: 0 };
+      this.pushTextOverlappingTarget(
+        transaction,
+        selection,
+        target,
+        pushDirection,
+      );
+    }
     let targetRow = 0;
     for (const line of lines) {
       for (let index = 0; index < line.cells.length; index += 1) {
