@@ -859,7 +859,7 @@ test("overwrite-mode selection movement replaces the target in place", () => {
   assert.equal(editor.document.getCell(4, 0), "E");
 });
 
-test("horizontal selection resize wraps only when shrinking", () => {
+test("horizontal selection resize restores remembered line breaks when growing", () => {
   const editor = new EditorModel();
   editor.insertText("ABCDEFGH");
   editor.setSelection({ x1: 0, y1: 0, x2: 8, y2: 1 });
@@ -870,15 +870,41 @@ test("horizontal selection resize wraps only when shrinking", () => {
   assert.deepEqual(editor.cursor, { x: 0, y: 0 });
 
   editor.resizeSelectionHorizontal("right", 8);
-  assert.equal(editor.copySelection(), "ABC     \nDEF     \nGH      ");
-  assert.deepEqual(editor.selection, { x1: 0, y1: 0, x2: 8, y2: 3 });
-
-  editor.undo();
   assert.equal(editor.copySelection(), "ABCDEFGH");
   assert.deepEqual(editor.selection, { x1: 0, y1: 0, x2: 8, y2: 1 });
-  editor.redo();
+
+  editor.undo();
   assert.equal(editor.copySelection(), "ABC\nDEF\nGH ");
   assert.deepEqual(editor.selection, { x1: 0, y1: 0, x2: 3, y2: 3 });
+  editor.redo();
+  assert.equal(editor.copySelection(), "ABCDEFGH");
+  assert.deepEqual(editor.selection, { x1: 0, y1: 0, x2: 8, y2: 1 });
+});
+
+test("horizontal selection growth reflows remembered lines as far as they fit", () => {
+  const editor = new EditorModel();
+  editor.insertText("ABCDEFGH");
+  editor.setSelection({ x1: 0, y1: 0, x2: 8, y2: 1 });
+
+  editor.resizeSelectionHorizontal("right", 3);
+  editor.resizeSelectionHorizontal("right", 5);
+
+  assert.equal(editor.copySelection(), "ABCDE\nFGH  ");
+  assert.deepEqual(editor.selection, { x1: 0, y1: 0, x2: 5, y2: 2 });
+});
+
+test("clearing a selection forgets its remembered line breaks", () => {
+  const editor = new EditorModel();
+  editor.insertText("ABCDEFGH");
+  editor.setSelection({ x1: 0, y1: 0, x2: 8, y2: 1 });
+  editor.resizeSelectionHorizontal("right", 3);
+
+  editor.setSelection(null);
+  editor.setSelection({ x1: 0, y1: 0, x2: 3, y2: 3 });
+  editor.resizeSelectionHorizontal("right", 8);
+
+  assert.equal(editor.copySelection(), "ABC     \nDEF     \nGH      ");
+  assert.deepEqual(editor.selection, { x1: 0, y1: 0, x2: 8, y2: 3 });
 });
 
 test("horizontal selection shrink preserves existing line breaks", () => {
@@ -904,6 +930,24 @@ test("horizontal selection shrink preserves existing line breaks", () => {
 
   assert.equal(editor.copySelection(), "ABC\nDE \nFG \n   \nHIJ\nK  ");
   assert.deepEqual(editor.selection, { x1: 0, y1: 0, x2: 3, y2: 6 });
+
+  editor.resizeSelectionHorizontal("right", 5);
+
+  assert.equal(editor.copySelection(), "ABCDE\nFG   \n     \nHIJK ");
+  assert.deepEqual(editor.selection, { x1: 0, y1: 0, x2: 5, y2: 4 });
+});
+
+test("remembered line breaks follow a moved selection", () => {
+  const editor = new EditorModel();
+  editor.insertText("ABCDEFGH");
+  editor.setSelection({ x1: 0, y1: 0, x2: 8, y2: 1 });
+  editor.resizeSelectionHorizontal("right", 3);
+
+  editor.moveSelection(5, 2);
+  editor.resizeSelectionHorizontal("right", 13);
+
+  assert.equal(editor.copySelection(), "ABCDEFGH");
+  assert.deepEqual(editor.selection, { x1: 5, y1: 2, x2: 13, y2: 3 });
 });
 
 test("selection shrink wraps at an in-bounds text line start", () => {
@@ -951,6 +995,13 @@ test("left selection edge shrink reflows content at the bounded line start", () 
   assert.equal(editor.document.getCell(9, 0), "E");
   assert.equal(editor.document.getCell(5, 1), "F");
   assert.equal(editor.document.getCell(6, 1), null);
+
+  editor.resizeSelectionHorizontal("left", 0);
+
+  assert.deepEqual(editor.selection, { x1: 0, y1: 0, x2: 10, y2: 1 });
+  assert.equal(editor.document.getCell(4, 0), "A");
+  assert.equal(editor.document.getCell(9, 0), "F");
+  assert.equal(editor.document.getCell(5, 1), null);
 });
 
 test("top and bottom selection edges change bounds without moving text", () => {

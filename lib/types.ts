@@ -48,6 +48,16 @@ export type Change = {
 export type EditorSnapshot = {
   cursor: Position;
   selection: Selection | null;
+  selectionReflow: SelectionReflow | null;
+};
+
+export type SelectionReflowLine = {
+  readonly cells: ReadonlyArray<string | null>;
+  readonly lineStartX: number;
+};
+
+export type SelectionReflow = {
+  readonly lines: ReadonlyArray<SelectionReflowLine>;
 };
 
 export type HistoryBatch = {
