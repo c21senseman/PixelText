@@ -15,6 +15,7 @@ import {
   Position,
   SearchResult,
   Selection,
+  SelectionReflow,
   assertSafePosition,
   assertTextRasterSize,
   cloneSelection,
@@ -31,8 +32,13 @@ function coordinateKey(x: number, y: number): string {
 function snapshotState(
   cursor: Position,
   selection: Selection | null,
+  selectionReflow: SelectionReflow | null,
 ): EditorSnapshot {
-  return { cursor: { ...cursor }, selection: cloneSelection(selection) };
+  return {
+    cursor: { ...cursor },
+    selection: cloneSelection(selection),
+    selectionReflow,
+  };
 }
 
 function translateSelection(
@@ -45,6 +51,19 @@ function translateSelection(
     y1: safeAdd(selection.y1, dy),
     x2: safeAdd(selection.x2, dx),
     y2: safeAdd(selection.y2, dy),
+  };
+}
+
+function translateSelectionReflow(
+  selectionReflow: SelectionReflow | null,
+  dx: number,
+): SelectionReflow | null {
+  if (!selectionReflow || dx === 0) return selectionReflow;
+  return {
+    lines: selectionReflow.lines.map((line) => ({
+      cells: line.cells,
+      lineStartX: safeAdd(line.lineStartX, dx),
+    })),
   };
 }
 
@@ -141,6 +160,7 @@ export class EditorModel {
 
   private undoStack: HistoryBatch[] = [];
   private redoStack: HistoryBatch[] = [];
+  private selectionReflow: SelectionReflow | null = null;
   private readonly listeners = new Set<EditorListener>();
 
   constructor(document = new SparseDocument()) {
@@ -167,7 +187,10 @@ export class EditorModel {
   setCursor(position: Position, clearSelection = true): void {
     assertSafePosition(position);
     this.cursor = { ...position };
-    if (clearSelection) this.selection = null;
+    if (clearSelection) {
+      this.selection = null;
+      this.selectionReflow = null;
+    }
     this.emit();
   }
 
@@ -195,6 +218,7 @@ export class EditorModel {
   }
 
   setSelection(selection: Selection | null): void {
+    this.selectionReflow = null;
     if (!selection) {
       this.selection = null;
       this.emit();
@@ -266,6 +290,7 @@ export class EditorModel {
     before: EditorSnapshot,
     cursor: Position,
     selection: Selection | null,
+    selectionReflow: SelectionReflow | null = null,
   ): void {
     assertSafePosition(cursor);
     const changes = transaction.finalChanges();
@@ -274,12 +299,17 @@ export class EditorModel {
     }
     this.cursor = { ...cursor };
     this.selection = cloneSelection(selection);
+    this.selectionReflow = selection ? selectionReflow : null;
 
     if (changes.length > 0) {
       this.undoStack.push({
         changes,
         before,
-        after: snapshotState(this.cursor, this.selection),
+        after: snapshotState(
+          this.cursor,
+          this.selection,
+          this.selectionReflow,
+        ),
       });
       if (this.undoStack.length > HISTORY_LIMIT) this.undoStack.shift();
       this.redoStack = [];
@@ -346,7 +376,11 @@ export class EditorModel {
       0,
     );
     assertTextRasterSize(width, segmentedLines.length);
-    const before = snapshotState(this.cursor, this.selection);
+    const before = snapshotState(
+      this.cursor,
+      this.selection,
+      this.selectionReflow,
+    );
     const transaction = new Transaction(this.document);
     const selectionStart = this.clearSelectionInTransaction(transaction);
     const start = selectionStart ?? this.cursor;
@@ -540,7 +574,11 @@ export class EditorModel {
   }
 
   backspace(): void {
-    const before = snapshotState(this.cursor, this.selection);
+    const before = snapshotState(
+      this.cursor,
+      this.selection,
+      this.selectionReflow,
+    );
     const transaction = new Transaction(this.document);
     const selection = this.selection;
     if (selection) {
@@ -583,7 +621,11 @@ export class EditorModel {
   }
 
   deleteForward(): void {
-    const before = snapshotState(this.cursor, this.selection);
+    const before = snapshotState(
+      this.cursor,
+      this.selection,
+      this.selectionReflow,
+    );
     const transaction = new Transaction(this.document);
     const selectionStart = this.clearSelectionInTransaction(transaction);
     if (selectionStart) {
@@ -623,7 +665,11 @@ export class EditorModel {
   }
 
   enter(): void {
-    const before = snapshotState(this.cursor, this.selection);
+    const before = snapshotState(
+      this.cursor,
+      this.selection,
+      this.selectionReflow,
+    );
     const transaction = new Transaction(this.document);
     const selectionStart = this.clearSelectionInTransaction(transaction);
     const cursor = selectionStart ?? this.cursor;
@@ -737,7 +783,11 @@ export class EditorModel {
 
   deleteSelection(): void {
     if (!this.selection) return;
-    const before = snapshotState(this.cursor, this.selection);
+    const before = snapshotState(
+      this.cursor,
+      this.selection,
+      this.selectionReflow,
+    );
     const transaction = new Transaction(this.document);
     const start = this.clearSelectionInTransaction(transaction);
     if (start) this.commit(transaction, before, start, null);
@@ -942,7 +992,11 @@ export class EditorModel {
     );
     const targetHasExistingText = this.selectionMoveTargetOverlapsText(dx, dy);
 
-    const before = snapshotState(this.cursor, this.selection);
+    const before = snapshotState(
+      this.cursor,
+      this.selection,
+      this.selectionReflow,
+    );
     const transaction = new Transaction(this.document);
     this.document.forEachInRect(
       selection.x1,
@@ -974,7 +1028,54 @@ export class EditorModel {
     for (const cell of snapshot) {
       transaction.set(safeAdd(cell.x, dx), safeAdd(cell.y, dy), cell.value);
     }
-    this.commit(transaction, before, { x: target.x1, y: target.y1 }, target);
+    this.commit(
+      transaction,
+      before,
+      { x: target.x1, y: target.y1 },
+      target,
+      translateSelectionReflow(this.selectionReflow, dx),
+    );
+  }
+
+  private captureSelectionReflow(
+    transaction: Transaction,
+    selection: Selection,
+    sourceWidth: number,
+  ): SelectionReflow {
+    const lines: Array<{
+      cells: ReadonlyArray<string | null>;
+      lineStartX: number;
+    }> = [];
+    for (let y = selection.y1; y < selection.y2; y += 1) {
+      const row: Array<string | null> = [];
+      let lastOccupied = -1;
+      let firstTextCellX: number | null = null;
+      for (let offset = 0; offset < sourceWidth; offset += 1) {
+        const x = safeAdd(selection.x1, offset);
+        const value = transaction.get(x, y);
+        row.push(value);
+        if (value !== null) lastOccupied = offset;
+        if (firstTextCellX === null && transaction.isTextCell(x, y)) {
+          firstTextCellX = x;
+        }
+      }
+
+      if (firstTextCellX === null || lastOccupied < 0) {
+        lines.push({ cells: [], lineStartX: selection.x1 });
+      } else {
+        const lineStartX = this.textLineStart(transaction, firstTextCellX, y);
+        const sourceStartX = Math.max(selection.x1, lineStartX);
+        lines.push({
+          cells: row.slice(
+            safeAdd(sourceStartX, -selection.x1),
+            lastOccupied + 1,
+          ),
+          lineStartX,
+        });
+      }
+      if (y === Number.MAX_SAFE_INTEGER) break;
+    }
+    return { lines };
   }
 
   resizeSelectionHorizontal(
@@ -998,7 +1099,7 @@ export class EditorModel {
 
     if (targetWidth === sourceWidth) return;
 
-    if (targetWidth > sourceWidth) {
+    if (targetWidth > sourceWidth && !this.selectionReflow) {
       assertTextRasterSize(targetWidth, sourceHeight);
       this.selection = {
         ...selection,
@@ -1010,54 +1111,26 @@ export class EditorModel {
     }
 
     const transaction = new Transaction(this.document);
-    const lines: Array<{
-      cells: Array<string | null>;
-      targetStartX: number;
-      targetLineWidth: number;
-    }> = [];
-    for (let y = selection.y1; y < selection.y2; y += 1) {
-      const row: Array<string | null> = [];
-      let lastOccupied = -1;
-      let firstTextCellX: number | null = null;
-      for (let offset = 0; offset < sourceWidth; offset += 1) {
-        const x = safeAdd(selection.x1, offset);
-        const value = transaction.get(x, y);
-        row.push(value);
-        if (value !== null) lastOccupied = offset;
-        if (firstTextCellX === null && transaction.isTextCell(x, y)) {
-          firstTextCellX = x;
-        }
-      }
-
-      if (firstTextCellX === null || lastOccupied < 0) {
-        lines.push({
-          cells: [],
-          targetStartX: targetX1,
-          targetLineWidth: targetWidth,
-        });
-      } else {
-        const lineStart = this.textLineStart(transaction, firstTextCellX, y);
-        const sourceStartX = Math.max(selection.x1, lineStart);
-        const sourceStartOffset = safeAdd(sourceStartX, -selection.x1);
-        const targetStartX =
-          lineStart >= targetX1 && lineStart < targetX2
-            ? lineStart
-            : targetX1;
-        lines.push({
-          cells: row.slice(sourceStartOffset, lastOccupied + 1),
-          targetStartX,
-          targetLineWidth: safeAdd(targetX2, -targetStartX),
-        });
-      }
-      if (y === Number.MAX_SAFE_INTEGER) break;
-    }
-
-    const targetHeight = lines.reduce(
-      (height, line) =>
+    const selectionReflow =
+      this.selectionReflow ??
+      this.captureSelectionReflow(transaction, selection, sourceWidth);
+    const lines = selectionReflow.lines.map((line) => {
+      const targetStartX =
+        line.lineStartX >= targetX1 && line.lineStartX < targetX2
+          ? line.lineStartX
+          : targetX1;
+      return {
+        cells: line.cells,
+        targetStartX,
+        targetLineWidth: safeAdd(targetX2, -targetStartX),
+      };
+    });
+    const targetHeight = lines.reduce((height, line) => {
+      return (
         height +
-        Math.max(1, Math.ceil(line.cells.length / line.targetLineWidth)),
-      0,
-    );
+        Math.max(1, Math.ceil(line.cells.length / line.targetLineWidth))
+      );
+    }, 0);
     assertTextRasterSize(targetWidth, targetHeight);
     const target: Selection = {
       x1: targetX1,
@@ -1066,7 +1139,11 @@ export class EditorModel {
       y2: safeAdd(selection.y1, targetHeight),
     };
 
-    const before = snapshotState(this.cursor, selection);
+    const before = snapshotState(
+      this.cursor,
+      selection,
+      this.selectionReflow,
+    );
     this.document.forEachInRect(
       selection.x1,
       selection.y1,
@@ -1074,13 +1151,25 @@ export class EditorModel {
       selection.y2,
       (x, y) => transaction.set(x, y, null),
     );
-    this.document.forEachInRect(
-      target.x1,
-      target.y1,
-      target.x2,
-      target.y2,
-      (x, y) => transaction.set(x, y, null),
-    );
+    if (this.overwriteMode) {
+      this.document.forEachInRect(
+        target.x1,
+        target.y1,
+        target.x2,
+        target.y2,
+        (x, y) => transaction.set(x, y, null),
+      );
+    } else {
+      const pushDirection = targetWidth < sourceWidth
+        ? { x: 0, y: 1 }
+        : { x: edge === "left" ? -1 : 1, y: 0 };
+      this.pushTextOverlappingTarget(
+        transaction,
+        selection,
+        target,
+        pushDirection,
+      );
+    }
     let targetRow = 0;
     for (const line of lines) {
       for (let index = 0; index < line.cells.length; index += 1) {
@@ -1101,7 +1190,13 @@ export class EditorModel {
       );
     }
 
-    this.commit(transaction, before, { x: target.x1, y: target.y1 }, target);
+    this.commit(
+      transaction,
+      before,
+      { x: target.x1, y: target.y1 },
+      target,
+      selectionReflow,
+    );
   }
 
   resizeSelectionVertical(
@@ -1207,6 +1302,7 @@ export class EditorModel {
     const result = this.searchResults[this.searchIndex];
     this.cursor = { ...result };
     this.selection = null;
+    this.selectionReflow = null;
     this.emit();
     return { ...result };
   }
@@ -1256,6 +1352,7 @@ export class EditorModel {
     }
     this.cursor = { ...batch.before.cursor };
     this.selection = cloneSelection(batch.before.selection);
+    this.selectionReflow = batch.before.selectionReflow;
     this.redoStack.push(batch);
     this.searchResults = [];
     this.searchIndex = -1;
@@ -1270,6 +1367,7 @@ export class EditorModel {
     }
     this.cursor = { ...batch.after.cursor };
     this.selection = cloneSelection(batch.after.selection);
+    this.selectionReflow = batch.after.selectionReflow;
     this.undoStack.push(batch);
     this.searchResults = [];
     this.searchIndex = -1;
@@ -1287,6 +1385,7 @@ export class EditorModel {
     this.bookmarks = bookmarks.map((bookmark) => ({ ...bookmark }));
     this.cursor = { ...cursor };
     this.selection = null;
+    this.selectionReflow = null;
     this.undoStack = [];
     this.redoStack = [];
     this.searchResults = [];
@@ -1303,6 +1402,7 @@ export class EditorModel {
     this.bookmarks = bookmarks.map((bookmark) => ({ ...bookmark }));
     this.cursor = { ...cursor };
     this.selection = null;
+    this.selectionReflow = null;
     this.undoStack = [];
     this.redoStack = [];
     this.searchResults = [];

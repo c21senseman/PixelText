@@ -1501,9 +1501,6 @@ export default function PixelTextEditor() {
               <div><dt>화면 이동</dt><dd><kbd>우클릭</kbd> + 끌기</dd></div>
               <div><dt>확대 · 축소</dt><dd><kbd>Ctrl</kbd> + 휠</dd></div>
               <div><dt>미니맵 확대 · 축소</dt><dd>미니맵 위 <kbd>Ctrl</kbd> + 휠</dd></div>
-              <div><dt>사각형 선택</dt><dd>캔버스 끌기 · 가장자리 자동 이동</dd></div>
-              <div><dt>선택 크기</dt><dd>선택 영역의 상하좌우 경계 끌기</dd></div>
-              <div><dt>선택 이동</dt><dd>삽입 모드: 방향키 방향 · 끌기는 마지막 비겹침 위치 기준</dd></div>
               <div><dt>입력 모드</dt><dd><kbd>Insert</kbd> 삽입 · 덮어쓰기 전환</dd></div>
               <div><dt>실행 취소</dt><dd><kbd>Ctrl</kbd> + <kbd>Z</kbd></dd></div>
               <div><dt>다시 실행</dt><dd><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Z</kbd></dd></div>
