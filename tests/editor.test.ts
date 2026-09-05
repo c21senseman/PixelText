@@ -7,6 +7,7 @@ import {
   MAX_IMPORT_FILE_BYTES,
   assertImportFileSize,
   exportJson,
+  exportTxt,
   importJson,
 } from "../lib/io";
 import {
@@ -182,7 +183,7 @@ test("selection drag renders selected text at the preview offset", () => {
   assert.ok(original);
   assert.deepEqual(drawnText.filter(({ value }) => value === "A"), [
     original,
-    { value: "A", x: original.x + 40, y: original.y + 24 },
+    { value: "A", x: original.x + 24, y: original.y + 24 },
   ]);
   assert.equal(drawnText.filter(({ value }) => value === "B").length, 1);
 });
@@ -209,20 +210,20 @@ test("spaces are empty cells and only one-cell gaps between text are spaces", ()
   assert.equal(document.cellCount, 2);
 });
 
-test("graphemes occupy one cell and insertion preserves a one-cell text gap", () => {
+test("graphemes occupy their display width and preserve a one-cell text gap", () => {
   const editor = new EditorModel();
   editor.insertText("A👨‍👩‍👧‍👦");
-  editor.document.setCell(3, 0, "Z");
+  editor.document.setCell(4, 0, "Z");
   editor.setCursor({ x: 1, y: 0 });
   editor.insertText("한");
 
   assert.equal(editor.document.getCell(0, 0), "A");
   assert.equal(editor.document.getCell(1, 0), "한");
-  assert.equal(editor.document.getCell(2, 0), "👨‍👩‍👧‍👦");
-  assert.equal(editor.document.getCell(3, 0), null);
-  assert.equal(editor.document.getTextCell(3, 0), " ");
-  assert.equal(editor.document.getCell(4, 0), "Z");
-  assert.deepEqual(editor.cursor, { x: 2, y: 0 });
+  assert.equal(editor.document.getCell(3, 0), "👨‍👩‍👧‍👦");
+  assert.equal(editor.document.getCell(5, 0), null);
+  assert.equal(editor.document.getTextCell(5, 0), " ");
+  assert.equal(editor.document.getCell(6, 0), "Z");
+  assert.deepEqual(editor.cursor, { x: 3, y: 0 });
 });
 
 test("backspace and delete pull through a one-cell text gap", () => {
@@ -360,7 +361,7 @@ test("multiline paste inserts each row independently", () => {
   assert.equal(editor.document.getCell(2, 0), "X");
   assert.equal(editor.document.getCell(0, 1), "Y");
   assert.equal(editor.document.getCell(0, 2), "한");
-  assert.deepEqual(editor.cursor, { x: 1, y: 2 });
+  assert.deepEqual(editor.cursor, { x: 2, y: 2 });
 });
 
 test("overwrite mode replaces graphemes, spaces, and multiline paste in place", () => {
@@ -377,7 +378,7 @@ test("overwrite mode replaces graphemes, spaces, and multiline paste in place", 
   assert.equal(editor.document.getCell(0, 0), "A");
   assert.equal(editor.document.getCell(1, 0), "한");
   assert.equal(editor.document.getCell(2, 0), null);
-  assert.equal(editor.document.getCell(3, 0), "D");
+  assert.equal(editor.document.getCell(3, 0), null);
   assert.equal(editor.document.getCell(4, 0), "E");
   assert.equal(editor.document.getCell(0, 1), "1");
   assert.equal(editor.document.getCell(1, 1), "X");
@@ -410,51 +411,22 @@ test("overwrite mode persists through cursor and selected-text movement", () => 
   assert.equal(editor.overwriteMode, false);
 });
 
-test("Enter splits a line and moves its connected lower block", () => {
-  const editor = new EditorModel();
-  editor.insertText("abcdef");
-  editor.setCursor({ x: 0, y: 1 });
-  editor.insertText("hello");
-  editor.setCursor({ x: 3, y: 0 });
-  editor.enter();
-
-  assert.equal(editor.document.getCell(0, 0), "a");
-  assert.equal(editor.document.getCell(2, 0), "c");
-  assert.equal(editor.document.getCell(3, 0), null);
-  assert.equal(editor.document.getCell(0, 1), "d");
-  assert.equal(editor.document.getCell(2, 1), "f");
-  assert.equal(editor.document.getCell(0, 2), "h");
-  assert.equal(editor.document.getCell(4, 2), "o");
-  assert.deepEqual(editor.cursor, { x: 0, y: 1 });
-});
-
-test("backspace at a line start returns the cursor to the previous line end", () => {
+test("backspace at a line start returns the cursor to the previous wide line end", () => {
   const editor = new EditorModel();
   editor.insertText("ㄱㄴㄷ");
   editor.enter();
   assert.deepEqual(editor.cursor, { x: 0, y: 1 });
-
   editor.backspace();
-  assert.deepEqual(editor.cursor, { x: 3, y: 0 });
-  assert.equal(editor.document.getCell(0, 0), "ㄱ");
-  assert.equal(editor.document.getCell(2, 0), "ㄷ");
+  assert.deepEqual(editor.cursor, { x: 6, y: 0 });
+  assert.equal(editor.document.getCell(4, 0), "ㄷ");
 
   const twoLines = new EditorModel();
-  twoLines.insertText("ㄱ ㄴㄷ");
+  twoLines.insertText("ㄱ ㄴㄷ\nㄹ ㅁㅂ");
   twoLines.setCursor({ x: 0, y: 1 });
-  twoLines.insertText("ㄹ ㅁㅂ");
-  twoLines.setCursor({ x: 0, y: 1 });
-
   twoLines.backspace();
-  assert.deepEqual(twoLines.cursor, { x: 4, y: 0 });
-  assert.equal(twoLines.document.getCell(4, 0), "ㄹ");
-  assert.equal(twoLines.document.getCell(5, 0), null);
-  assert.equal(twoLines.document.getTextCell(5, 0), " ");
-  assert.equal(twoLines.document.getCell(6, 0), "ㅁ");
-  assert.equal(twoLines.document.getCell(7, 0), "ㅂ");
-  assert.equal(twoLines.document.getCell(0, 1), null);
-  assert.equal(twoLines.document.getCell(2, 1), null);
-  assert.equal(twoLines.document.getCell(3, 1), null);
+  assert.deepEqual(twoLines.cursor, { x: 7, y: 0 });
+  assert.equal(exportTxt(twoLines.document), "ㄱ ㄴㄷㄹ ㅁㅂ");
+  assert.equal(twoLines.document.getTextCell(9, 0), " ");
 });
 
 test("backspace joins a current line to the previous line", () => {
@@ -482,13 +454,22 @@ test("backspace joins a current line to the previous line", () => {
   assert.deepEqual(editor.cursor, { x: 0, y: 1 });
 });
 
-test("backspace line join reverses Enter for its connected lower block", () => {
+test("Enter splits a line and backspace restores its connected lower block", () => {
   const editor = new EditorModel();
   editor.insertText("abcdef");
   editor.setCursor({ x: 0, y: 1 });
   editor.insertText("hello");
   editor.setCursor({ x: 3, y: 0 });
   editor.enter();
+
+  assert.equal(editor.document.getCell(0, 0), "a");
+  assert.equal(editor.document.getCell(2, 0), "c");
+  assert.equal(editor.document.getCell(3, 0), null);
+  assert.equal(editor.document.getCell(0, 1), "d");
+  assert.equal(editor.document.getCell(2, 1), "f");
+  assert.equal(editor.document.getCell(0, 2), "h");
+  assert.equal(editor.document.getCell(4, 2), "o");
+  assert.deepEqual(editor.cursor, { x: 0, y: 1 });
 
   editor.backspace();
 
@@ -893,7 +874,7 @@ test("horizontal selection growth reflows remembered lines as far as they fit", 
   assert.deepEqual(editor.selection, { x1: 0, y1: 0, x2: 5, y2: 2 });
 });
 
-test("insert-mode selection growth pushes an overlapping text block", () => {
+test("insert-mode selection growth adopts text that does not overlap reflowed characters", () => {
   const editor = new EditorModel();
   editor.insertText("ABCDEFGH");
   editor.document.setCell(8, 0, "X");
@@ -903,9 +884,9 @@ test("insert-mode selection growth pushes an overlapping text block", () => {
   editor.resizeSelectionHorizontal("right", 3);
   editor.resizeSelectionHorizontal("right", 10);
 
-  assert.equal(editor.copySelection(), "ABCDEFGH  ");
-  assert.equal(editor.document.getCell(10, 0), "X");
-  assert.equal(editor.document.getCell(11, 0), "Y");
+  assert.equal(editor.copySelection(), "ABCDEFGHXY");
+  assert.equal(editor.document.getCell(8, 0), "X");
+  assert.equal(editor.document.getCell(9, 0), "Y");
 
   editor.undo();
   assert.equal(editor.copySelection(), "ABC\nDEF\nGH ");
@@ -913,9 +894,9 @@ test("insert-mode selection growth pushes an overlapping text block", () => {
   assert.equal(editor.document.getCell(9, 0), "Y");
 
   editor.redo();
-  assert.equal(editor.copySelection(), "ABCDEFGH  ");
-  assert.equal(editor.document.getCell(10, 0), "X");
-  assert.equal(editor.document.getCell(11, 0), "Y");
+  assert.equal(editor.copySelection(), "ABCDEFGHXY");
+  assert.equal(editor.document.getCell(8, 0), "X");
+  assert.equal(editor.document.getCell(9, 0), "Y");
 });
 
 test("insert-mode selection shrink pushes a block below new wrapped rows", () => {

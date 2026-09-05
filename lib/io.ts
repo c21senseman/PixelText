@@ -225,7 +225,7 @@ export function exportTxt(document: SparseDocument): string {
   for (let y = bounds.minY; y < bounds.maxY; y += 1) {
     let line = "";
     for (let x = bounds.minX; x < bounds.maxX; x += 1) {
-      line += document.getCell(x, y) ?? " ";
+      line += document.getRasterCell(x, y) ?? " ";
     }
     lines.push(line);
   }

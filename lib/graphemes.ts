@@ -1,3 +1,4 @@
+import { WIDE_RANGES } from "./wide-ranges";
 import { EditorError } from "./types";
 
 const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
@@ -48,4 +49,27 @@ export function assertValidCellValue(value: unknown): asserts value is string {
   if (!isValidCellValue(value)) {
     throw new EditorError("셀 값은 제어 문자가 아닌 문자소 묶음 하나여야 합니다.");
   }
+}
+
+// Width belongs to the whole grapheme, never its individual combining marks.
+export function graphemeWidth(value: string): 1 | 2 {
+  if (/\p{Emoji_Presentation}|\uFE0F|\u20E3/u.test(value)) return 2;
+  for (const character of value.normalize("NFC")) {
+    if (/\p{Mark}/u.test(character)) continue;
+    const code = character.codePointAt(0)!;
+    let low = 0;
+    let high = WIDE_RANGES.length - 1;
+    while (low <= high) {
+      const middle = (low + high) >>> 1;
+      const [start, end] = WIDE_RANGES[middle];
+      if (code < start) high = middle - 1;
+      else if (code > end) low = middle + 1;
+      else return 2;
+    }
+  }
+  return 1;
+}
+
+export function textWidth(value: string): number {
+  return segmentGraphemes(value).reduce((width, cell) => width + graphemeWidth(cell), 0);
 }

@@ -1,5 +1,5 @@
 import { parseChunkKey, SparseDocument } from "./document";
-import { segmentGraphemes } from "./graphemes";
+import { graphemeWidth, segmentGraphemes } from "./graphemes";
 import {
   Bookmark,
   Bounds,
@@ -10,7 +10,7 @@ import {
   Selection,
 } from "./types";
 
-export const BASE_CELL_WIDTH = 20;
+export const BASE_CELL_WIDTH = 12;
 export const BASE_CELL_HEIGHT = 24;
 const BASE_FONT_SIZE = 19;
 const CANVAS_FONT_FAMILY =
@@ -79,6 +79,34 @@ export function logicalToScreen(
   };
 }
 
+// Keep a small pixel margin; for oversized selections follow the changing edge.
+export function cameraToReveal(
+  camera: Camera,
+  viewport: Viewport,
+  target: Selection,
+  previous?: Selection,
+): Camera {
+  if (viewport.width <= 0 || viewport.height <= 0) return camera;
+  const metrics = cellMetrics(camera);
+  const revealAxis = (center: number, pixels: number, cellSize: number,
+    start: number, end: number, oldStart?: number, oldEnd?: number) => {
+    const half = Math.max(0, pixels / 2 - Math.min(24, pixels / 4)) / cellSize;
+    if (end - start > half * 2) {
+      if (oldEnd !== undefined && end > oldEnd) start = end;
+      else if (oldStart !== undefined && start < oldStart) end = start;
+      else return center;
+    }
+    if (start < center - half) return start + half;
+    if (end > center + half) return end - half;
+    return center;
+  };
+  return {
+    ...camera,
+    x: revealAxis(camera.x, viewport.width, metrics.width, target.x1, target.x2, previous?.x1, previous?.x2),
+    y: revealAxis(camera.y, viewport.height, metrics.height, target.y1, target.y2, previous?.y1, previous?.y2),
+  };
+}
+
 export function viewportCellBounds(camera: Camera, viewport: Viewport): Selection {
   const metrics = cellMetrics(camera);
   return {
@@ -138,15 +166,16 @@ export function drawEditorCanvas(
     visible.y2,
     (x, y, value) => {
       const screen = logicalToScreen({ x, y }, options.camera, viewport);
+      const glyphWidth = metrics.width * graphemeWidth(value);
       context.save();
       context.beginPath();
-      context.rect(screen.x, screen.y, metrics.width, metrics.height);
+      context.rect(screen.x, screen.y, glyphWidth, metrics.height);
       context.clip();
       context.fillText(
         value,
-        screen.x + metrics.width / 2,
+        screen.x + glyphWidth / 2,
         screen.y + metrics.height * 0.53,
-        metrics.width * 0.96,
+        glyphWidth * 0.96,
       );
       context.restore();
     },
@@ -202,12 +231,13 @@ export function drawEditorCanvas(
     options.cursor.y <= visible.y2
   ) {
     if (options.overwriteMode) {
+      const cursorWidth = metrics.width * graphemeWidth(options.document.getCell(options.cursor.x, options.cursor.y) ?? " ");
       const lineWidth = Math.max(1, 1.5 * options.camera.zoom);
       context.fillStyle = "rgba(82, 97, 230, 0.2)";
       context.fillRect(
         cursorScreen.x,
         cursorScreen.y,
-        metrics.width,
+        cursorWidth,
         metrics.height,
       );
       context.strokeStyle = "#5261e6";
@@ -215,7 +245,7 @@ export function drawEditorCanvas(
       context.strokeRect(
         cursorScreen.x + lineWidth / 2,
         cursorScreen.y + lineWidth / 2,
-        Math.max(0, metrics.width - lineWidth),
+        Math.max(0, cursorWidth - lineWidth),
         Math.max(0, metrics.height - lineWidth),
       );
     } else {
@@ -240,30 +270,34 @@ export function drawEditorCanvas(
     context.font = `${Math.max(4, BASE_FONT_SIZE * options.camera.zoom)}px ${CANVAS_FONT_FAMILY}`;
     context.textAlign = "center";
     context.textBaseline = "middle";
+    let column = 0;
     for (let index = 0; index < graphemes.length; index += 1) {
-      const position = { x: options.cursor.x + index, y: options.cursor.y };
+      const position = { x: options.cursor.x + column, y: options.cursor.y };
       const screen = logicalToScreen(position, options.camera, viewport);
+      const width = graphemeWidth(graphemes[index]);
+      column += width;
       context.fillStyle = options.overwriteMode
         ? "rgba(224, 227, 255, 0.96)"
         : "rgba(82, 97, 230, 0.08)";
-      context.fillRect(screen.x, screen.y, metrics.width, metrics.height);
+      context.fillRect(screen.x, screen.y, metrics.width * width, metrics.height);
+      const glyphWidth = metrics.width * width;
       context.save();
       context.beginPath();
-      context.rect(screen.x, screen.y, metrics.width, metrics.height);
+      context.rect(screen.x, screen.y, glyphWidth, metrics.height);
       context.clip();
       context.fillStyle = "#4753c8";
       context.fillText(
         graphemes[index],
-        screen.x + metrics.width / 2,
+        screen.x + glyphWidth / 2,
         screen.y + metrics.height * 0.53,
-        metrics.width * 0.96,
+        glyphWidth * 0.96,
       );
       context.restore();
       context.strokeStyle = "#5261e6";
       context.lineWidth = 1;
       context.beginPath();
       context.moveTo(screen.x + 2, screen.y + metrics.height - 2);
-      context.lineTo(screen.x + metrics.width - 2, screen.y + metrics.height - 2);
+      context.lineTo(screen.x + glyphWidth - 2, screen.y + metrics.height - 2);
       context.stroke();
     }
   }
@@ -328,21 +362,23 @@ function drawSelectionTextPreview(
     source.x2,
     source.y2,
     (x, y, value) => {
+      if (x < selection.x1 || graphemeWidth(value) > selection.x2 - x) return;
       const screen = logicalToScreen(
         { x: x + preview.dx, y: y + preview.dy },
         camera,
         viewport,
       );
+      const glyphWidth = metrics.width * graphemeWidth(value);
       context.save();
       context.beginPath();
-      context.rect(screen.x, screen.y, metrics.width, metrics.height);
+      context.rect(screen.x, screen.y, glyphWidth, metrics.height);
       context.clip();
       context.fillStyle = "rgba(49, 62, 199, 0.94)";
       context.fillText(
         value,
-        screen.x + metrics.width / 2,
+        screen.x + glyphWidth / 2,
         screen.y + metrics.height * 0.53,
-        metrics.width * 0.96,
+        glyphWidth * 0.96,
       );
       context.restore();
     },
@@ -698,7 +734,7 @@ export function drawMinimap(
     const chunkWorldX = coordinates.x * CHUNK_SIZE;
     const chunkWorldY = coordinates.y * CHUNK_SIZE;
     if (
-      chunkWorldX + CHUNK_SIZE <= worldMinX ||
+      chunkWorldX + CHUNK_SIZE + 1 <= worldMinX ||
       chunkWorldX >= worldMaxX ||
       chunkWorldY + CHUNK_SIZE <= worldMinY ||
       chunkWorldY >= worldMaxY
@@ -712,12 +748,12 @@ export function drawMinimap(
     if (chunkScreenSize >= 4) {
       const cellSize = Math.max(devicePixel, scale);
       context.fillStyle = scale >= 1 ? "rgba(48, 51, 47, 0.88)" : "rgba(48, 51, 47, 0.72)";
-      for (const index of chunk.keys()) {
+      for (const [index, value] of chunk) {
         const lx = index % CHUNK_SIZE;
         const ly = Math.floor(index / CHUNK_SIZE);
         const x = Math.round((chunkX + lx * scale) * dpr) / dpr;
         const y = Math.round((chunkY + ly * scale) * dpr) / dpr;
-        context.fillRect(x, y, cellSize, cellSize);
+        context.fillRect(x, y, Math.max(devicePixel, scale * graphemeWidth(value)), cellSize);
       }
     } else {
       const density = chunk.size / (CHUNK_SIZE * CHUNK_SIZE);

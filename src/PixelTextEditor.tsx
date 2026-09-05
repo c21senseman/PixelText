@@ -14,7 +14,8 @@ import {
 } from "react";
 import { EditorModel, SelectionResizeEdge } from "@/lib/editor";
 import { SparseDocument } from "@/lib/document";
-import { segmentGraphemes } from "@/lib/graphemes";
+import { textWidth } from "@/lib/graphemes";
+import { cameraAfterWheel, cameraMovementAxis, type ScrollAxis } from "@/lib/navigation";
 import {
   assertImportFileSize,
   exportJson,
@@ -25,6 +26,7 @@ import {
   MAX_MINIMAP_ZOOM,
   MIN_MINIMAP_ZOOM,
   MinimapTransform,
+  cameraToReveal,
   cellMetrics,
   clampMinimapTarget,
   clampMinimapZoom,
@@ -68,6 +70,9 @@ type DragState =
     }
   | {
       kind: "move";
+      clientX: number;
+      clientY: number;
+      autoPanned: boolean;
       pointerId: number;
       start: Position;
       dx: number;
@@ -76,6 +81,9 @@ type DragState =
     }
   | {
       kind: "resize";
+      clientX: number;
+      clientY: number;
+      autoPanned: boolean;
       pointerId: number;
       edge: SelectionResizeEdge;
       original: Selection;
@@ -154,6 +162,8 @@ export default function PixelTextEditor() {
   const [bookmarkName, setBookmarkName] = useState("");
   const [exportOpen, setExportOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [selectionDragPreview, setSelectionDragPreview] =
+    useState<Selection | null>(null);
   const [selectionPreview, setSelectionPreview] = useState<{
     dx: number;
     dy: number;
@@ -168,6 +178,7 @@ export default function PixelTextEditor() {
   const importInputRef = useRef<HTMLInputElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const cameraRef = useRef<Camera>({ ...DEFAULT_CAMERA });
+  const lastScrollAxisRef = useRef<ScrollAxis>("y");
   const dragRef = useRef<DragState | null>(null);
   const selectionAutoPanFrameRef = useRef<number | null>(null);
   const selectionAutoPanLastTimeRef = useRef<number | null>(null);
@@ -279,12 +290,17 @@ export default function PixelTextEditor() {
   }, []);
 
   const setCamera = useCallback(
-    (camera: Camera, persist = true) => {
+    (camera: Camera, persist = true, trackMovement = true) => {
       const next: Camera = {
         x: Number.isFinite(camera.x) ? camera.x : cameraRef.current.x,
         y: Number.isFinite(camera.y) ? camera.y : cameraRef.current.y,
         zoom: Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, camera.zoom)),
       };
+      if (trackMovement) {
+        lastScrollAxisRef.current = cameraMovementAxis(
+          cameraRef.current, next, lastScrollAxisRef.current,
+        );
+      }
       cameraRef.current = next;
       setCameraState(next);
       setRevision((value) => value + 1);
@@ -293,6 +309,75 @@ export default function PixelTextEditor() {
     },
     [requestRender, scheduleSave],
   );
+
+  useEffect(() => {
+    // Linux primary-selection paste may run on mouseup, before auxclick.
+    // Keep blocking that gesture until a new keyboard or pointer action starts.
+    let middleClick = false;
+    const trackPointer = (event: globalThis.PointerEvent) => {
+      middleClick = event.button === 1;
+    };
+    const blockMiddleMouse = (event: globalThis.MouseEvent) => {
+      if (event.button !== 1) return;
+      middleClick = true;
+      event.preventDefault();
+    };
+    const reset = () => { middleClick = false; };
+    const blockPaste = (event: Event) => {
+      if (!middleClick) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+    const blockPasteInput = (event: Event) => {
+      if (!(event as InputEvent).inputType?.startsWith("insertFromPaste")) return;
+      blockPaste(event);
+      const input = textareaRef.current;
+      if (middleClick && event.type === "input" && input && event.target === input) {
+        input.value = "";
+      }
+    };
+    window.addEventListener("pointerdown", trackPointer, true);
+    window.addEventListener("mousedown", blockMiddleMouse, true);
+    window.addEventListener("mouseup", blockMiddleMouse, true);
+    window.addEventListener("auxclick", blockMiddleMouse, true);
+    window.addEventListener("keydown", reset, true);
+    window.addEventListener("blur", reset);
+    window.addEventListener("paste", blockPaste, true);
+    window.addEventListener("beforeinput", blockPasteInput, true);
+    window.addEventListener("input", blockPasteInput, true);
+    return () => {
+      window.removeEventListener("pointerdown", trackPointer, true);
+      window.removeEventListener("mousedown", blockMiddleMouse, true);
+      window.removeEventListener("mouseup", blockMiddleMouse, true);
+      window.removeEventListener("auxclick", blockMiddleMouse, true);
+      window.removeEventListener("keydown", reset, true);
+      window.removeEventListener("blur", reset);
+      window.removeEventListener("paste", blockPaste, true);
+      window.removeEventListener("beforeinput", blockPasteInput, true);
+      window.removeEventListener("input", blockPasteInput, true);
+    };
+  }, []);
+
+  useEffect(() => {
+    const bounds = (): Selection => editor.selection ? { ...editor.selection } : {
+      x1: editor.cursor.x, y1: editor.cursor.y,
+      x2: editor.cursor.x + 1, y2: editor.cursor.y + 1,
+    };
+    let previous = bounds();
+    return editor.subscribe(() => {
+      const target = bounds();
+      const changed = target.x1 !== previous.x1 || target.y1 !== previous.y1 ||
+        target.x2 !== previous.x2 || target.y2 !== previous.y2;
+      const old = previous;
+      previous = target;
+      const canvas = canvasRef.current;
+      if (!changed || !readyRef.current || dragRef.current || !canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      const current = cameraRef.current;
+      const next = cameraToReveal(current, rect, target, old);
+      if (next.x !== current.x || next.y !== current.y) setCamera(next);
+    });
+  }, [editor, setCamera]);
 
   useEffect(() => {
     const unsubscribe = editor.subscribe((change) => {
@@ -355,14 +440,14 @@ export default function PixelTextEditor() {
   const drawLatest = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const searchLength = segmentGraphemes(searchQuery).length;
+    const searchLength = textWidth(searchQuery);
     drawEditorCanvas(canvas, {
       document: editor.document,
       bookmarks: editor.bookmarks,
       camera: cameraRef.current,
       cursor: editor.cursor,
       overwriteMode: editor.overwriteMode,
-      selection: editor.selection,
+      selection: selectionDragPreview ?? editor.selection,
       composition,
       searchResults: editor.searchResults,
       activeSearchIndex: editor.searchIndex,
@@ -396,6 +481,7 @@ export default function PixelTextEditor() {
     editor,
     minimapZoom,
     searchQuery,
+    selectionDragPreview,
     selectionPreview,
     selectionResizePreview,
   ]);
@@ -413,6 +499,7 @@ export default function PixelTextEditor() {
     requestRender,
     revision,
     searchQuery,
+    selectionDragPreview,
     selectionPreview,
     selectionResizePreview,
   ]);
@@ -702,42 +789,6 @@ export default function PixelTextEditor() {
     return nearest?.edge ?? null;
   };
 
-  const pointerBoundaryX = (
-    event: PointerEvent<HTMLCanvasElement>,
-  ): number | null => {
-    const canvas = canvasRef.current;
-    if (!canvas) return null;
-    const rect = canvas.getBoundingClientRect();
-    const metrics = cellMetrics(cameraRef.current);
-    const logicalX =
-      cameraRef.current.x +
-      (event.clientX - rect.left - rect.width / 2) / metrics.width;
-    const boundaryX = Math.round(logicalX);
-    if (!Number.isSafeInteger(boundaryX)) {
-      showError(new EditorError("이 위치까지 선택 영역을 조절할 수 없습니다."));
-      return null;
-    }
-    return boundaryX;
-  };
-
-  const pointerBoundaryY = (
-    event: PointerEvent<HTMLCanvasElement>,
-  ): number | null => {
-    const canvas = canvasRef.current;
-    if (!canvas) return null;
-    const rect = canvas.getBoundingClientRect();
-    const metrics = cellMetrics(cameraRef.current);
-    const logicalY =
-      cameraRef.current.y +
-      (event.clientY - rect.top - rect.height / 2) / metrics.height;
-    const boundaryY = Math.round(logicalY);
-    if (!Number.isSafeInteger(boundaryY)) {
-      showError(new EditorError("이 위치까지 선택 영역을 조절할 수 없습니다."));
-      return null;
-    }
-    return boundaryY;
-  };
-
   const stopSelectionAutoPan = () => {
     if (selectionAutoPanFrameRef.current !== null) {
       window.cancelAnimationFrame(selectionAutoPanFrameRef.current);
@@ -750,7 +801,7 @@ export default function PixelTextEditor() {
     selectionAutoPanFrameRef.current = null;
     const drag = dragRef.current;
     const canvas = canvasRef.current;
-    if (!canvas || drag?.kind !== "select") {
+    if (!canvas || !drag || drag.kind === "pan") {
       selectionAutoPanLastTimeRef.current = null;
       return;
     }
@@ -787,20 +838,7 @@ export default function PixelTextEditor() {
     );
     drag.autoPanned = true;
 
-    const focus = screenToCell(
-      drag.clientX - rect.left,
-      drag.clientY - rect.top,
-      cameraRef.current,
-      { width: rect.width, height: rect.height },
-    );
-    if (Number.isSafeInteger(focus.x) && Number.isSafeInteger(focus.y)) {
-      drag.moved =
-        drag.moved || focus.x !== drag.anchor.x || focus.y !== drag.anchor.y;
-      if (drag.moved) {
-        editor.setSelection(selectionFromCursorDrag(drag.anchor, focus));
-        editor.setCursor(focus, false);
-      }
-    }
+    updateSelectionDrag(drag.clientX, drag.clientY);
 
     selectionAutoPanFrameRef.current = window.requestAnimationFrame(
       selectionAutoPanStep,
@@ -815,7 +853,7 @@ export default function PixelTextEditor() {
   };
 
   const handlePointerDown = (event: PointerEvent<HTMLCanvasElement>) => {
-    if (event.button === 2) {
+    if (event.button === 1 || event.button === 2) {
       event.preventDefault();
       finishCompositionBeforeCommand();
       focusInput();
@@ -839,6 +877,7 @@ export default function PixelTextEditor() {
       event.currentTarget.setPointerCapture(event.pointerId);
       dragRef.current = {
         kind: "resize",
+        clientX: event.clientX, clientY: event.clientY, autoPanned: false,
         pointerId: event.pointerId,
         edge: resizeEdge,
         original,
@@ -855,6 +894,7 @@ export default function PixelTextEditor() {
     if (isPointInSelection(cell, editor.selection)) {
       dragRef.current = {
         kind: "move",
+        clientX: event.clientX, clientY: event.clientY, autoPanned: false,
         pointerId: event.pointerId,
         start: cell,
         dx: 0,
@@ -892,20 +932,29 @@ export default function PixelTextEditor() {
       });
       return;
     }
+    drag.clientX = event.clientX;
+    drag.clientY = event.clientY;
+    updateSelectionDrag(event.clientX, event.clientY);
+    ensureSelectionAutoPan();
+  };
+
+  function updateSelectionDrag(clientX: number, clientY: number) {
+    const drag = dragRef.current;
+    const canvas = canvasRef.current;
+    if (!drag || drag.kind === "pan" || !canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const current = cameraRef.current;
+    const metrics = cellMetrics(current);
     if (drag.kind === "resize") {
-      const pointerBoundary = isHorizontalResizeEdge(drag.edge)
-        ? pointerBoundaryX(event)
-        : pointerBoundaryY(event);
-      if (pointerBoundary === null) return;
-      if (drag.edge === "left") {
-        drag.boundary = Math.min(pointerBoundary, drag.original.x2 - 1);
-      } else if (drag.edge === "right") {
-        drag.boundary = Math.max(pointerBoundary, drag.original.x1 + 1);
-      } else if (drag.edge === "top") {
-        drag.boundary = Math.min(pointerBoundary, drag.original.y2 - 1);
-      } else {
-        drag.boundary = Math.max(pointerBoundary, drag.original.y1 + 1);
-      }
+      const horizontal = isHorizontalResizeEdge(drag.edge);
+      const boundary = Math.round(horizontal
+        ? current.x + (clientX - rect.left - rect.width / 2) / metrics.width
+        : current.y + (clientY - rect.top - rect.height / 2) / metrics.height);
+      if (!Number.isSafeInteger(boundary)) return;
+      if (drag.edge === "left") drag.boundary = Math.min(boundary, drag.original.x2 - 1);
+      else if (drag.edge === "right") drag.boundary = Math.max(boundary, drag.original.x1 + 1);
+      else if (drag.edge === "top") drag.boundary = Math.min(boundary, drag.original.y2 - 1);
+      else drag.boundary = Math.max(boundary, drag.original.y1 + 1);
       const preview = { ...drag.original };
       if (drag.edge === "left") preview.x1 = drag.boundary;
       else if (drag.edge === "right") preview.x2 = drag.boundary;
@@ -914,30 +963,30 @@ export default function PixelTextEditor() {
       setSelectionResizePreview(preview);
       return;
     }
-    const cell = pointerCell(event);
-    if (!cell) return;
+    const cell = screenToCell(clientX - rect.left, clientY - rect.top, current, rect);
+    if (!Number.isSafeInteger(cell.x) || !Number.isSafeInteger(cell.y)) return;
     if (drag.kind === "select") {
-      drag.clientX = event.clientX;
-      drag.clientY = event.clientY;
-      ensureSelectionAutoPan();
       drag.moved = drag.moved || cell.x !== drag.anchor.x || cell.y !== drag.anchor.y;
       if (!drag.moved) return;
-      editor.setSelection(selectionFromCursorDrag(drag.anchor, cell));
-      editor.setCursor(cell, false);
+      // Keep the anchor and pointer bounds stable until the gesture is committed.
+      setSelectionDragPreview(selectionFromCursorDrag(drag.anchor, cell));
       return;
     }
     drag.dx = cell.x - drag.start.x;
     drag.dy = cell.y - drag.start.y;
-    if (!editor.selectionMoveTargetOverlapsText(drag.dx, drag.dy)) {
-      drag.lastNonOverlappingOffset = { x: drag.dx, y: drag.dy };
-    }
+    runAction(() => {
+      if (!editor.selectionMoveTargetOverlapsText(drag.dx, drag.dy)) {
+        drag.lastNonOverlappingOffset = { x: drag.dx, y: drag.dy };
+      }
+    });
     setSelectionPreview({ dx: drag.dx, dy: drag.dy });
-  };
+  }
 
   const handlePointerUp = (event: PointerEvent<HTMLCanvasElement>) => {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     stopSelectionAutoPan();
+    dragRef.current = null;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
@@ -960,12 +1009,18 @@ export default function PixelTextEditor() {
       }));
     } else if (drag.kind === "move") {
       editor.setCursor(drag.start);
-    } else if (drag.kind === "select" && !drag.moved) {
-      editor.setSelection(null);
-      editor.setCursor(drag.anchor);
+    } else if (drag.kind === "select") {
+      const cell = pointerCell(event);
+      if (cell) {
+        runAction(() => {
+          editor.setSelection(selectionFromCursorDrag(drag.anchor, cell));
+          // Reveal the completed selection, without first scrolling to a snapped cursor.
+          editor.setCursor(cell, false);
+        });
+      }
     }
-    if (drag.kind === "select" && drag.autoPanned) scheduleSave();
-    dragRef.current = null;
+    if (drag.kind !== "pan" && drag.autoPanned) scheduleSave();
+    setSelectionDragPreview(null);
     setSelectionPreview(null);
     setSelectionResizePreview(null);
     focusInput();
@@ -978,13 +1033,17 @@ export default function PixelTextEditor() {
   };
 
   const handleWheel = useCallback((event: globalThis.WheelEvent) => {
-    if (!event.ctrlKey && !event.metaKey) return;
     event.preventDefault();
     event.stopPropagation();
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
     const current = cameraRef.current;
+    if (!event.ctrlKey && !event.metaKey) {
+      const next = cameraAfterWheel(current, rect, event, lastScrollAxisRef.current);
+      if (next !== current) setCamera(next);
+      return;
+    }
     const oldMetrics = cellMetrics(current);
     const mouseX = event.clientX - rect.left;
     const mouseY = event.clientY - rect.top;
@@ -999,18 +1058,21 @@ export default function PixelTextEditor() {
       x: logicalX - (mouseX - rect.width / 2) / nextMetrics.width,
       y: logicalY - (mouseY - rect.height / 2) / nextMetrics.height,
       zoom,
-    });
+    }, true, false);
   }, [setCamera]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    const input = textareaRef.current;
+    input?.addEventListener("wheel", handleWheel, { passive: false, capture: true });
     canvas.addEventListener("wheel", handleWheel, {
       passive: false,
       capture: true,
     });
     return () => {
       canvas.removeEventListener("wheel", handleWheel, { capture: true });
+      input?.removeEventListener("wheel", handleWheel, { capture: true });
     };
   }, [handleWheel]);
 
@@ -1042,7 +1104,7 @@ export default function PixelTextEditor() {
 
   const navigateSearch = (direction: 1 | -1) => {
     const result = editor.navigateSearch(direction);
-    if (result) centerOn(result, segmentGraphemes(searchQuery).length / 2);
+    if (result) centerOn(result, textWidth(searchQuery) / 2);
   };
 
   const addBookmark = () => {
@@ -1076,6 +1138,7 @@ export default function PixelTextEditor() {
 
     runAction(() => editor.replaceDocument(new SparseDocument(), []));
     setCamera({ ...DEFAULT_CAMERA });
+    lastScrollAxisRef.current = "y";
     setSearchQuery("");
     setMinimapZoom(MIN_MINIMAP_ZOOM);
     setExportOpen(false);
@@ -1092,6 +1155,7 @@ export default function PixelTextEditor() {
       const imported = importJson(await file.text());
       editor.replaceDocument(imported.document, imported.bookmarks);
       setCamera(imported.camera);
+      lastScrollAxisRef.current = "y";
       setNotice("문서를 가져왔습니다.");
       setExportOpen(false);
     } catch (error) {
@@ -1155,8 +1219,9 @@ export default function PixelTextEditor() {
     setCamera({ ...cameraRef.current, x: target.x, y: target.y });
   };
 
-  const selectionSize = editor.selection
-    ? `${editor.selection.x2 - editor.selection.x1}×${editor.selection.y2 - editor.selection.y1}`
+  const visibleSelection = selectionDragPreview ?? editor.selection;
+  const selectionSize = visibleSelection
+    ? `${visibleSelection.x2 - visibleSelection.x1}×${visibleSelection.y2 - visibleSelection.y1}`
     : "";
   const saveLabel: Record<SaveState, string> = {
     loading: "불러오는 중",
@@ -1285,7 +1350,16 @@ export default function PixelTextEditor() {
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
-          onPointerCancel={handlePointerUp}
+          onPointerCancel={(event) => {
+            stopSelectionAutoPan();
+            if (dragRef.current?.kind !== "pan" && dragRef.current?.autoPanned) scheduleSave();
+            dragRef.current = null;
+            setSelectionDragPreview(null);
+            setSelectionPreview(null);
+            setSelectionResizePreview(null);
+            event.currentTarget.classList.remove("is-panning");
+          }}
+          onAuxClick={(event) => { if (event.button === 1) event.preventDefault(); }}
           onPointerLeave={handlePointerLeave}
           onContextMenu={(event) => event.preventDefault()}
         />
@@ -1295,7 +1369,8 @@ export default function PixelTextEditor() {
           전환합니다. 마우스 끌기로 사각형을 선택하며, 선택 중 화면 가장자리로
           끌면 캔버스가 자동 이동합니다. 선택의 상하좌우 경계를 끌면 크기를
           조절하며, 왼쪽이나 오른쪽 경계를 줄일 때 글 시작 위치에 맞춰 자동
-          줄바꿈합니다. 마우스 오른쪽 버튼을 누른 채 끌면 화면을 이동하고
+          줄바꿈합니다. 마우스 오른쪽·휠 버튼을 누른 채 끌면 화면을 이동하고
+          휠을 돌리면 마지막 화면 이동 축으로 스크롤하며, 기본값은 세로입니다.
           Ctrl과 휠로 확대합니다.
         </p>
         <textarea
@@ -1498,7 +1573,8 @@ export default function PixelTextEditor() {
               </button>
             </div>
             <dl className="shortcut-list">
-              <div><dt>화면 이동</dt><dd><kbd>우클릭</kbd> + 끌기</dd></div>
+              <div><dt>화면 이동</dt><dd><kbd>우클릭 / 휠 버튼</kbd> + 끌기</dd></div>
+              <div><dt>스크롤</dt><dd>휠 · 마지막 화면 이동 축 (기본 세로)</dd></div>
               <div><dt>확대 · 축소</dt><dd><kbd>Ctrl</kbd> + 휠</dd></div>
               <div><dt>미니맵 확대 · 축소</dt><dd>미니맵 위 <kbd>Ctrl</kbd> + 휠</dd></div>
               <div><dt>입력 모드</dt><dd><kbd>Insert</kbd> 삽입 · 덮어쓰기 전환</dd></div>

@@ -6,7 +6,7 @@ import {
   Position,
   assertSafePosition,
 } from "./types";
-import { assertValidCellValue } from "./graphemes";
+import { assertValidCellValue, graphemeWidth } from "./graphemes";
 
 export type ChunkKey = `${number},${number}`;
 export type Chunk = Map<number, string>;
@@ -72,13 +72,30 @@ export class SparseDocument {
     return this.chunks.get(key)?.get(index) ?? null;
   }
 
+  // Only anchors are stored; the empty string represents the second occupied column.
+  getRasterCell(x: number, y: number): string | null {
+    const value = this.getCell(x, y);
+    if (value !== null) return value;
+    if (x > Number.MIN_SAFE_INTEGER) {
+      const left = this.getCell(x - 1, y);
+      if (left !== null && graphemeWidth(left) === 2) return "";
+    }
+    return null;
+  }
+
+  snapPosition(position: Position): Position {
+    return this.getRasterCell(position.x, position.y) === ""
+      ? { x: position.x - 1, y: position.y }
+      : { ...position };
+  }
+
   isInterCharacterSpace(x: number, y: number): boolean {
     assertSafePosition({ x, y });
     return (
-      this.getCell(x, y) === null &&
+      this.getRasterCell(x, y) === null &&
       x > Number.MIN_SAFE_INTEGER &&
       x < Number.MAX_SAFE_INTEGER &&
-      this.getCell(x - 1, y) !== null &&
+      this.getRasterCell(x - 1, y) !== null &&
       this.getCell(x + 1, y) !== null
     );
   }
@@ -89,6 +106,7 @@ export class SparseDocument {
 
   private spaceCandidates(x: number): number[] {
     const candidates = [x];
+    if (x < Number.MAX_SAFE_INTEGER - 1) candidates.push(x + 2);
     if (x > Number.MIN_SAFE_INTEGER) candidates.push(x - 1);
     if (x < Number.MAX_SAFE_INTEGER) candidates.push(x + 1);
     return candidates;
@@ -104,7 +122,10 @@ export class SparseDocument {
 
   setCell(x: number, y: number, value: string | null): void {
     assertSafePosition({ x, y });
-    if (value !== null) assertValidCellValue(value);
+    if (value !== null) {
+      assertValidCellValue(value);
+      assertSafePosition({ x: x + (graphemeWidth(value) - 1), y });
+    }
     const nextValue = value === " " ? null : value;
 
     const { key, index } = chunkAddress({ x, y });
@@ -205,9 +226,10 @@ export class SparseDocument {
     maxX: number,
     maxY: number,
     callback: (x: number, y: number, value: string) => void,
+    fullyContained = false,
   ): void {
     if (maxX <= minX || maxY <= minY) return;
-    const minCx = Math.floor(minX / CHUNK_SIZE);
+    const minCx = Math.floor((minX - 1) / CHUNK_SIZE);
     const maxCx = Math.floor((maxX - 1) / CHUNK_SIZE);
     const minCy = Math.floor(minY / CHUNK_SIZE);
     const maxCy = Math.floor((maxY - 1) / CHUNK_SIZE);
@@ -219,8 +241,10 @@ export class SparseDocument {
         for (const [index, value] of chunk) {
           const x = cx * CHUNK_SIZE + (index % CHUNK_SIZE);
           const y = cy * CHUNK_SIZE + Math.floor(index / CHUNK_SIZE);
-          if (x >= minX && x < maxX && y >= minY && y < maxY) {
-            callback(x, y, value);
+          if (x + graphemeWidth(value) > minX && x < maxX && y >= minY && y < maxY) {
+            if (!fullyContained || (x >= minX && x + graphemeWidth(value) <= maxX)) {
+              callback(x, y, value);
+            }
           }
         }
       }
@@ -233,10 +257,10 @@ export class SparseDocument {
     let minY = Number.POSITIVE_INFINITY;
     let maxX = Number.NEGATIVE_INFINITY;
     let maxY = Number.NEGATIVE_INFINITY;
-    for (const [position] of this.entries()) {
+    for (const [position, value] of this.entries()) {
       minX = Math.min(minX, position.x);
       minY = Math.min(minY, position.y);
-      maxX = Math.max(maxX, position.x + 1);
+      maxX = Math.max(maxX, position.x + graphemeWidth(value));
       maxY = Math.max(maxY, position.y + 1);
     }
     return { minX, minY, maxX, maxY };
@@ -278,6 +302,7 @@ export class SparseDocument {
       const x = serialized.x * CHUNK_SIZE + lx;
       const y = serialized.y * CHUNK_SIZE + ly;
       assertSafePosition({ x, y });
+      assertSafePosition({ x: x + (graphemeWidth(value) - 1), y });
       if (value === " ") continue;
       chunk.set(index, value);
       const candidates = spaceCandidatesByRow.get(y) ?? new Set<number>();
@@ -302,6 +327,23 @@ export class SparseDocument {
   static fromChunks(chunks: SerializedChunk[]): SparseDocument {
     const document = new SparseDocument();
     for (const chunk of chunks) document.loadChunk(chunk);
+    // Older files placed all graphemes one column apart. Resolve overlapping
+    // anchors from left to right, preserving the spacing of the shifted suffix.
+    const entries = Array.from(document.entries()).sort((a, b) => a[0].y - b[0].y || a[0].x - b[0].x);
+    const moves: Array<{ from: Position; to: Position; value: string }> = [];
+    let row: number | null = null;
+    let end = Number.MIN_SAFE_INTEGER;
+    let shift = 0;
+    for (const [position, value] of entries) {
+      if (row !== position.y) { row = position.y; end = Number.MIN_SAFE_INTEGER; shift = 0; }
+      const x = Math.max(position.x + shift, end);
+      assertSafePosition({ x: x + (graphemeWidth(value) - 1), y: position.y });
+      shift = x - position.x;
+      end = x + graphemeWidth(value);
+      if (x !== position.x) moves.push({ from: position, to: { x, y: position.y }, value });
+    }
+    for (const move of moves) document.deleteCell(move.from.x, move.from.y);
+    for (const move of moves) document.setCell(move.to.x, move.to.y, move.value);
     return document;
   }
 }

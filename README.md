@@ -36,7 +36,8 @@ PixelText is a Canvas-based editor for writing and organizing text anywhere in a
 | Task | Control |
 | --- | --- |
 | Type | Click the canvas and start typing |
-| Pan | Drag with the right mouse button |
+| Pan | Drag with the right or middle mouse button |
+| Scroll | Mouse wheel along the last pan axis (vertical by default) |
 | Zoom | `Ctrl` + mouse wheel |
 | Rectangular selection | Drag across the canvas |
 | Resize a selection | Drag its top, bottom, left, or right edge |
