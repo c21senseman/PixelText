@@ -1,6 +1,6 @@
 {
   "name": "pixeltext-canvas",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "An offline, infinite 2D canvas for arranging text anywhere.",
   "license": "MIT",
