@@ -1,5 +1,6 @@
 import { SerializedChunk, SparseDocument } from "./document";
 import { hasControlCharacter, isValidCellValue } from "./graphemes";
+import { parseTextStyle, type TextStyle } from "./formatting";
 import {
   Bookmark,
   Camera,
@@ -20,7 +21,7 @@ export const MAX_IMPORT_FILE_BYTES = 20 * 1024 * 1024;
 const MAX_IMPORT_CHUNKS = 50_000;
 
 export type PixelTextFile = {
-  version: 1;
+  version: 1 | 2;
   chunkSize: 64;
   chunks: SerializedChunk[];
   bookmarks: Bookmark[];
@@ -100,7 +101,7 @@ export function exportJson(
   camera: Camera,
 ): string {
   const file: PixelTextFile = {
-    version: 1,
+    version: 2,
     chunkSize: CHUNK_SIZE,
     chunks: document.sortedChunks(),
     bookmarks: bookmarks.map((bookmark) => ({ ...bookmark })),
@@ -130,7 +131,7 @@ export function importJson(raw: string): ImportedDocument {
   ) {
     throw new EditorError("필수 문서 필드가 없습니다.");
   }
-  if (parsed.version !== 1 || parsed.chunkSize !== CHUNK_SIZE) {
+  if ((parsed.version !== 1 && parsed.version !== 2) || parsed.chunkSize !== CHUNK_SIZE) {
     throw new EditorError("지원하지 않는 문서 버전 또는 청크 크기입니다.");
   }
   if (!Array.isArray(parsed.chunks)) {
@@ -180,10 +181,23 @@ export function importJson(raw: string): ImportedDocument {
       seenIndices.add(rawCell[0]);
       cells.push([rawCell[0], rawCell[1]]);
     }
+    const styles: Array<[number, TextStyle]> = [];
+    if (rawChunk.styles !== undefined) {
+      if (!Array.isArray(rawChunk.styles)) throw new EditorError("청크 서식은 배열이어야 합니다.");
+      const styledIndices = new Set<number>();
+      for (const entry of rawChunk.styles) {
+        if (!Array.isArray(entry) || entry.length !== 2 || !seenIndices.has(entry[0]) || styledIndices.has(entry[0])) {
+          throw new EditorError("잘못되거나 중복된 글자 서식입니다.");
+        }
+        styledIndices.add(entry[0]);
+        styles.push([entry[0], parseTextStyle(entry[1])]);
+      }
+    }
     chunks.push({
       x: rawChunk.x as number,
       y: rawChunk.y as number,
       cells,
+      ...(styles.length ? { styles } : {}),
     });
   }
 

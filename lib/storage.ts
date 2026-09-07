@@ -75,7 +75,7 @@ export class IndexedDocumentStorage {
 
     if (!meta && storedChunks.length === 0) return null;
     const document = SparseDocument.fromChunks(
-      storedChunks.map(({ x, y, cells }) => ({ x, y, cells })),
+      storedChunks.map(({ x, y, cells, styles }) => ({ x, y, cells, styles })),
     );
     const camera = isStoredCamera(meta?.camera)
       ? meta.camera

@@ -1,10 +1,9 @@
-import { parseChunkKey, SparseDocument } from "./document";
+import { SparseDocument } from "./document";
 import { graphemeWidth, segmentGraphemes } from "./graphemes";
 import {
   Bookmark,
   Bounds,
   Camera,
-  CHUNK_SIZE,
   Position,
   SearchResult,
   Selection,
@@ -12,7 +11,8 @@ import {
 
 export const BASE_CELL_WIDTH = 12;
 export const BASE_CELL_HEIGHT = 24;
-const BASE_FONT_SIZE = 19;
+import { BASE_FONT_SIZE, DEFAULT_TEXT_STYLE, type TextStyle } from "./formatting";
+import { getTextLayout, type LayoutGlyph } from "./layout";
 const CANVAS_FONT_FAMILY =
   '"SFMono-Regular", "Cascadia Code", Consolas, "D2Coding", "Nanum Gothic Coding", "Noto Sans Mono CJK KR", monospace';
 
@@ -34,6 +34,7 @@ export type DrawEditorOptions = {
   overwriteMode: boolean;
   selection: Selection | null;
   composition: string;
+  typingStyle?: TextStyle;
   searchResults: SearchResult[];
   activeSearchIndex: number;
   searchLength: number;
@@ -59,19 +60,24 @@ export function screenToCell(
   screenY: number,
   camera: Camera,
   viewport: Viewport,
+  document?: SparseDocument,
 ): Position {
   const metrics = cellMetrics(camera);
-  return {
-    x: Math.floor(camera.x + (screenX - viewport.width / 2) / metrics.width),
-    y: Math.floor(camera.y + (screenY - viewport.height / 2) / metrics.height),
+  const world = {
+    x: camera.x + (screenX - viewport.width / 2) / metrics.width,
+    y: camera.y + (screenY - viewport.height / 2) / metrics.height,
   };
+  const logical = document ? getTextLayout(document).toLogical(world) : world;
+  return { x: Math.floor(logical.x + 1e-9), y: Math.floor(logical.y + 1e-9) };
 }
 
 export function logicalToScreen(
   position: Position,
   camera: Camera,
   viewport: Viewport,
+  document?: SparseDocument,
 ): Position {
+  if (document) position = getTextLayout(document).toWorld(position);
   const metrics = cellMetrics(camera);
   return {
     x: (position.x - camera.x) * metrics.width + viewport.width / 2,
@@ -140,249 +146,131 @@ export function resizeCanvas(canvas: HTMLCanvasElement, maxDpr = 2.5): {
   };
 }
 
-export function drawEditorCanvas(
-  canvas: HTMLCanvasElement,
-  options: DrawEditorOptions,
+function drawGlyph(
+  context: CanvasRenderingContext2D,
+  glyph: Pick<LayoutGlyph, "text" | "style" | "rect">,
+  camera: Camera,
+  viewport: Viewport,
+  color = "#252521",
 ): void {
+  const screen = logicalToScreen({ x: glyph.rect.x1, y: glyph.rect.y1 }, camera, viewport);
+  const metrics = cellMetrics(camera);
+  const width = (glyph.rect.x2 - glyph.rect.x1) * metrics.width;
+  const height = (glyph.rect.y2 - glyph.rect.y1) * metrics.height;
+  const style = glyph.style;
+  context.save();
+  context.font = `${style.italic ? "italic " : ""}${style.bold ? "700 " : "400 "}${Math.max(1, style.fontSize * camera.zoom)}px ${CANVAS_FONT_FAMILY}`;
+  context.textAlign = "center";
+  context.textBaseline = "alphabetic";
+  context.fillStyle = color;
+  context.beginPath();
+  context.rect(screen.x, screen.y, width, height);
+  context.clip();
+  context.fillText(glyph.text, screen.x + width / 2, screen.y + height * 0.8, width * 0.96);
+  context.strokeStyle = color;
+  context.lineWidth = Math.max(0.7, style.fontSize * camera.zoom / 16);
+  for (const fraction of [style.underline ? 0.91 : null, style.strikethrough ? 0.52 : null]) {
+    if (fraction === null) continue;
+    context.beginPath();
+    context.moveTo(screen.x + width * 0.04, screen.y + height * fraction);
+    context.lineTo(screen.x + width * 0.96, screen.y + height * fraction);
+    context.stroke();
+  }
+  context.restore();
+}
+
+export function drawEditorCanvas(canvas: HTMLCanvasElement, options: DrawEditorOptions): void {
   const resized = resizeCanvas(canvas);
   if (!resized) return;
   const { context, viewport } = resized;
   const metrics = cellMetrics(options.camera);
   const visible = viewportCellBounds(options.camera, viewport);
-
+  const layout = getTextLayout(options.document);
+  const typingStyle = options.typingStyle ?? DEFAULT_TEXT_STYLE;
   context.clearRect(0, 0, viewport.width, viewport.height);
   context.fillStyle = "#f7f7f4";
   context.fillRect(0, 0, viewport.width, viewport.height);
-
-  context.font = `${Math.max(4, BASE_FONT_SIZE * options.camera.zoom)}px ${CANVAS_FONT_FAMILY}`;
-  context.textAlign = "center";
-  context.textBaseline = "middle";
-  context.fillStyle = "#252521";
-
-  options.document.forEachInRect(
-    visible.x1,
-    visible.y1,
-    visible.x2,
-    visible.y2,
-    (x, y, value) => {
-      const screen = logicalToScreen({ x, y }, options.camera, viewport);
-      const glyphWidth = metrics.width * graphemeWidth(value);
-      context.save();
-      context.beginPath();
-      context.rect(screen.x, screen.y, glyphWidth, metrics.height);
-      context.clip();
-      context.fillText(
-        value,
-        screen.x + glyphWidth / 2,
-        screen.y + metrics.height * 0.53,
-        glyphWidth * 0.96,
-      );
-      context.restore();
-    },
-  );
+  layout.forEachVisible(visible, (glyph) => drawGlyph(context, glyph, options.camera, viewport));
 
   if (options.selection) {
-    const preview = options.selectionPreview ?? { dx: 0, dy: 0 };
-    if (options.selectionPreview || options.selectionResizePreview) {
-      drawSelection(
-        context,
-        options.selection,
-        options.camera,
-        viewport,
-        visible,
-        "rgba(57, 70, 61, 0.06)",
-        "rgba(57, 70, 61, 0.24)",
-      );
+    const selection = options.selection;
+    const preview = options.selectionPreview;
+    const source = layout.selectionBounds(selection);
+    const target = preview ? layout.toWorld({ x: selection.x1 + preview.dx, y: selection.y1 + preview.dy }) : null;
+    const origin = layout.toWorld({ x: selection.x1, y: selection.y1 });
+    const dx = target ? target.x - origin.x : 0;
+    const dy = target ? target.y - origin.y : 0;
+    const translate = (r: Selection): Selection => ({ x1: r.x1 + dx, y1: r.y1 + dy, x2: r.x2 + dx, y2: r.y2 + dy });
+    if (preview || options.selectionResizePreview) {
+      drawSelection(context, source, options.camera, viewport, visible, "rgba(57,70,61,0.06)", "rgba(57,70,61,0.24)");
     }
-    drawSelection(
-      context,
-      options.selectionResizePreview ?? {
-          x1: options.selection.x1 + preview.dx,
-          y1: options.selection.y1 + preview.dy,
-          x2: options.selection.x2 + preview.dx,
-          y2: options.selection.y2 + preview.dy,
-        },
-      options.camera,
-      viewport,
-      visible,
-      "rgba(92, 105, 246, 0.16)",
-      "rgba(77, 91, 229, 0.7)",
-      true,
-    );
-    if (options.selectionPreview) {
-      drawSelectionTextPreview(
-        context,
-        options.document,
-        options.selection,
-        options.selectionPreview,
-        options.camera,
-        viewport,
-        visible,
-      );
+    const shown = options.selectionResizePreview ?? selection;
+    for (const rect of layout.selectionRects(shown)) {
+      drawSelection(context, translate(rect), options.camera, viewport, visible,
+        "rgba(92,105,246,0.16)", "transparent");
+    }
+    drawSelection(context, translate(layout.selectionBounds(shown)), options.camera, viewport, visible,
+      "transparent", "rgba(77,91,229,0.7)", true);
+    if (preview && (dx || dy)) {
+      options.document.forEachInSelection(selection, (x, y, text) => {
+        const style = options.document.getStyle(x, y);
+        const rect = translate(layout.caretRect({ x, y }, style, graphemeWidth(text)));
+        if (rect.x2 > visible.x1 && rect.x1 < visible.x2 && rect.y2 > visible.y1 && rect.y1 < visible.y2) {
+          drawGlyph(context, { text, style, rect }, options.camera, viewport, "rgba(49,62,199,0.94)");
+        }
+      }, true);
     }
   }
 
-  const cursorScreen = logicalToScreen(options.cursor, options.camera, viewport);
-  if (
-    shouldDrawCursor(options) &&
-    options.cursor.x >= visible.x1 &&
-    options.cursor.x <= visible.x2 &&
-    options.cursor.y >= visible.y1 &&
-    options.cursor.y <= visible.y2
-  ) {
+  const overwriteText = options.document.getCell(options.cursor.x, options.cursor.y);
+  const cursorStyle = options.overwriteMode && overwriteText ? options.document.getStyle(options.cursor.x, options.cursor.y) : typingStyle;
+  const caret = layout.caretRect(options.cursor, cursorStyle, options.overwriteMode ? graphemeWidth(overwriteText ?? " ") : 1);
+  const cursorScreen = logicalToScreen({ x: caret.x1, y: caret.y1 }, options.camera, viewport);
+  const cursorHeight = (caret.y2 - caret.y1) * metrics.height;
+  if (shouldDrawCursor(options) && caret.x2 >= visible.x1 && caret.x1 <= visible.x2 && caret.y2 >= visible.y1 && caret.y1 <= visible.y2) {
     if (options.overwriteMode) {
-      const cursorWidth = metrics.width * graphemeWidth(options.document.getCell(options.cursor.x, options.cursor.y) ?? " ");
-      const lineWidth = Math.max(1, 1.5 * options.camera.zoom);
-      context.fillStyle = "rgba(82, 97, 230, 0.2)";
-      context.fillRect(
-        cursorScreen.x,
-        cursorScreen.y,
-        cursorWidth,
-        metrics.height,
-      );
+      const width = (caret.x2 - caret.x1) * metrics.width;
+      context.fillStyle = "rgba(82,97,230,0.2)";
+      context.fillRect(cursorScreen.x, cursorScreen.y, width, cursorHeight);
       context.strokeStyle = "#5261e6";
-      context.lineWidth = lineWidth;
-      context.strokeRect(
-        cursorScreen.x + lineWidth / 2,
-        cursorScreen.y + lineWidth / 2,
-        Math.max(0, cursorWidth - lineWidth),
-        Math.max(0, metrics.height - lineWidth),
-      );
+      context.lineWidth = Math.max(1, 1.5 * options.camera.zoom);
+      context.strokeRect(cursorScreen.x + 0.5, cursorScreen.y + 0.5, Math.max(0, width - 1), Math.max(0, cursorHeight - 1));
     } else {
-      const inset = Math.max(2, metrics.height * 0.13);
-      context.strokeStyle = "rgba(247, 247, 244, 0.94)";
-      context.lineWidth = Math.max(3, 4 * options.camera.zoom);
-      context.beginPath();
-      context.moveTo(cursorScreen.x, cursorScreen.y + inset);
-      context.lineTo(cursorScreen.x, cursorScreen.y + metrics.height - inset);
-      context.stroke();
-      context.strokeStyle = "#5261e6";
-      context.lineWidth = Math.max(1.5, 1.75 * options.camera.zoom);
-      context.beginPath();
-      context.moveTo(cursorScreen.x, cursorScreen.y + inset);
-      context.lineTo(cursorScreen.x, cursorScreen.y + metrics.height - inset);
-      context.stroke();
+      const inset = Math.min(cursorHeight / 4, Math.max(1, cursorHeight * 0.13));
+      for (const [color, width] of [["rgba(247,247,244,0.94)", 4], ["#5261e6", 1.75]] as const) {
+        context.strokeStyle = color;
+        context.lineWidth = Math.max(width * 0.75, width * options.camera.zoom);
+        context.beginPath();
+        context.moveTo(cursorScreen.x, cursorScreen.y + inset);
+        context.lineTo(cursorScreen.x, cursorScreen.y + cursorHeight - inset);
+        context.stroke();
+      }
     }
   }
 
   if (options.composition) {
-    const graphemes = segmentGraphemes(options.composition);
-    context.font = `${Math.max(4, BASE_FONT_SIZE * options.camera.zoom)}px ${CANVAS_FONT_FAMILY}`;
-    context.textAlign = "center";
-    context.textBaseline = "middle";
-    let column = 0;
-    for (let index = 0; index < graphemes.length; index += 1) {
-      const position = { x: options.cursor.x + column, y: options.cursor.y };
-      const screen = logicalToScreen(position, options.camera, viewport);
-      const width = graphemeWidth(graphemes[index]);
-      column += width;
-      context.fillStyle = options.overwriteMode
-        ? "rgba(224, 227, 255, 0.96)"
-        : "rgba(82, 97, 230, 0.08)";
-      context.fillRect(screen.x, screen.y, metrics.width * width, metrics.height);
-      const glyphWidth = metrics.width * width;
-      context.save();
-      context.beginPath();
-      context.rect(screen.x, screen.y, glyphWidth, metrics.height);
-      context.clip();
-      context.fillStyle = "#4753c8";
-      context.fillText(
-        graphemes[index],
-        screen.x + glyphWidth / 2,
-        screen.y + metrics.height * 0.53,
-        glyphWidth * 0.96,
-      );
-      context.restore();
-      context.strokeStyle = "#5261e6";
-      context.lineWidth = 1;
-      context.beginPath();
-      context.moveTo(screen.x + 2, screen.y + metrics.height - 2);
-      context.lineTo(screen.x + glyphWidth - 2, screen.y + metrics.height - 2);
-      context.stroke();
+    const scale = typingStyle.fontSize / BASE_FONT_SIZE;
+    const rect = layout.caretRect(options.cursor, typingStyle);
+    let x = rect.x1;
+    for (const text of segmentGraphemes(options.composition)) {
+      const width = graphemeWidth(text) * scale;
+      const glyphRect = { ...rect, x1: x, x2: x + width };
+      const screen = logicalToScreen({ x, y: rect.y1 }, options.camera, viewport);
+      context.fillStyle = "rgba(224,227,255,0.96)";
+      context.fillRect(screen.x, screen.y, width * metrics.width, scale * metrics.height);
+      drawGlyph(context, { text, style: { ...typingStyle, underline: true }, rect: glyphRect }, options.camera, viewport, "#4753c8");
+      x += width;
     }
   }
 
   if (options.searchLength > 0) {
-    const visibleResults = options.searchResults;
-    for (let index = 0; index < visibleResults.length; index += 1) {
-      const result = visibleResults[index];
-      if (
-        result.x + options.searchLength < visible.x1 ||
-        result.x > visible.x2 ||
-        result.y < visible.y1 ||
-        result.y > visible.y2
-      ) {
-        continue;
-      }
-      const screen = logicalToScreen(result, options.camera, viewport);
-      context.strokeStyle =
-        index === options.activeSearchIndex ? "#e89a3c" : "rgba(232, 154, 60, 0.5)";
-      context.lineWidth = index === options.activeSearchIndex ? 2 : 1;
-      context.strokeRect(
-        screen.x + 1,
-        screen.y + 1,
-        metrics.width * options.searchLength - 2,
-        metrics.height - 2,
-      );
-    }
+    options.searchResults.forEach((result, index) => {
+      const bounds = layout.selectionBounds({ x1: result.x, y1: result.y, x2: result.x + options.searchLength, y2: result.y + 1 });
+      drawSelection(context, bounds, options.camera, viewport, visible, "transparent",
+        index === options.activeSearchIndex ? "#e89a3c" : "rgba(232,154,60,0.5)");
+    });
   }
-
-  drawBookmarks(
-    context,
-    options.bookmarks,
-    options.camera,
-    viewport,
-    visible,
-  );
-}
-
-function drawSelectionTextPreview(
-  context: CanvasRenderingContext2D,
-  document: SparseDocument,
-  selection: Selection,
-  preview: SelectionPreview,
-  camera: Camera,
-  viewport: Viewport,
-  visible: Selection,
-): void {
-  if (preview.dx === 0 && preview.dy === 0) return;
-
-  const source = {
-    x1: Math.max(selection.x1, visible.x1 - preview.dx),
-    y1: Math.max(selection.y1, visible.y1 - preview.dy),
-    x2: Math.min(selection.x2, visible.x2 - preview.dx),
-    y2: Math.min(selection.y2, visible.y2 - preview.dy),
-  };
-  if (source.x2 <= source.x1 || source.y2 <= source.y1) return;
-
-  const metrics = cellMetrics(camera);
-  document.forEachInRect(
-    source.x1,
-    source.y1,
-    source.x2,
-    source.y2,
-    (x, y, value) => {
-      if (x < selection.x1 || graphemeWidth(value) > selection.x2 - x) return;
-      const screen = logicalToScreen(
-        { x: x + preview.dx, y: y + preview.dy },
-        camera,
-        viewport,
-      );
-      const glyphWidth = metrics.width * graphemeWidth(value);
-      context.save();
-      context.beginPath();
-      context.rect(screen.x, screen.y, glyphWidth, metrics.height);
-      context.clip();
-      context.fillStyle = "rgba(49, 62, 199, 0.94)";
-      context.fillText(
-        value,
-        screen.x + glyphWidth / 2,
-        screen.y + metrics.height * 0.53,
-        glyphWidth * 0.96,
-      );
-      context.restore();
-    },
-  );
+  drawBookmarks(context, options.bookmarks.map((b) => ({ ...b, ...layout.toWorld(b) })), options.camera, viewport, visible);
 }
 
 function fitBookmarkName(
@@ -670,7 +558,8 @@ export function drawMinimap(
   context.clearRect(0, 0, viewport.width, viewport.height);
 
   const viewBounds = viewportCellBounds(camera, editorViewport);
-  const contentBounds = document.bounds();
+  const layout = getTextLayout(document);
+  const contentBounds = layout.bounds;
   let baseMinX = viewBounds.x1;
   let baseMinY = viewBounds.y1;
   let baseMaxX = viewBounds.x2;
@@ -688,7 +577,6 @@ export function drawMinimap(
     baseMaxY = Math.max(viewBounds.y2, contentBounds.maxY + margin);
   }
 
-  const chunkKeys = document.chunkKeys();
 
   const padding = 10;
   const worldWidth = Math.max(1, baseMaxX - baseMinX);
@@ -727,43 +615,13 @@ export function drawMinimap(
   context.clip();
 
   const devicePixel = 1 / dpr;
-  for (const key of chunkKeys) {
-    const coordinates = parseChunkKey(key);
-    const chunk = document.getChunk(key);
-    if (!chunk) continue;
-    const chunkWorldX = coordinates.x * CHUNK_SIZE;
-    const chunkWorldY = coordinates.y * CHUNK_SIZE;
-    if (
-      chunkWorldX + CHUNK_SIZE + 1 <= worldMinX ||
-      chunkWorldX >= worldMaxX ||
-      chunkWorldY + CHUNK_SIZE <= worldMinY ||
-      chunkWorldY >= worldMaxY
-    ) {
-      continue;
-    }
-    const chunkX = offsetX + (chunkWorldX - worldMinX) * scale;
-    const chunkY = offsetY + (chunkWorldY - worldMinY) * scale;
-    const chunkScreenSize = CHUNK_SIZE * scale;
-
-    if (chunkScreenSize >= 4) {
-      const cellSize = Math.max(devicePixel, scale);
-      context.fillStyle = scale >= 1 ? "rgba(48, 51, 47, 0.88)" : "rgba(48, 51, 47, 0.72)";
-      for (const [index, value] of chunk) {
-        const lx = index % CHUNK_SIZE;
-        const ly = Math.floor(index / CHUNK_SIZE);
-        const x = Math.round((chunkX + lx * scale) * dpr) / dpr;
-        const y = Math.round((chunkY + ly * scale) * dpr) / dpr;
-        context.fillRect(x, y, Math.max(devicePixel, scale * graphemeWidth(value)), cellSize);
-      }
-    } else {
-      const density = chunk.size / (CHUNK_SIZE * CHUNK_SIZE);
-      const x = Math.round(chunkX * dpr) / dpr;
-      const y = Math.round(chunkY * dpr) / dpr;
-      const size = Math.max(devicePixel, chunkScreenSize);
-      context.fillStyle = `rgba(48, 51, 47, ${Math.min(0.9, 0.5 + Math.sqrt(density) * 1.2)})`;
-      context.fillRect(x, y, size, size);
-    }
-  }
+  context.fillStyle = scale >= 1 ? "rgba(48,51,47,0.88)" : "rgba(48,51,47,0.72)";
+  layout.forEachVisible({ x1: worldMinX, y1: worldMinY, x2: worldMaxX, y2: worldMaxY }, (glyph) => {
+    const r = glyph.rect;
+    const x = Math.round((offsetX + (r.x1 - worldMinX) * scale) * dpr) / dpr;
+    const y = Math.round((offsetY + (r.y1 - worldMinY) * scale) * dpr) / dpr;
+    context.fillRect(x, y, Math.max(devicePixel, (r.x2 - r.x1) * scale), Math.max(devicePixel, (r.y2 - r.y1) * scale));
+  });
 
   const cameraX = offsetX + (viewBounds.x1 - worldMinX) * scale;
   const cameraY = offsetY + (viewBounds.y1 - worldMinY) * scale;

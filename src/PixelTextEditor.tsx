@@ -13,6 +13,9 @@ import {
   useState,
 } from "react";
 import { EditorModel, SelectionResizeEdge } from "@/lib/editor";
+import { FormattingToolbar } from "./FormattingToolbar";
+import { getTextLayout } from "@/lib/layout";
+import { RICH_TEXT_MIME, copyRichText, readRichText } from "@/lib/clipboard";
 import { SparseDocument } from "@/lib/document";
 import { textWidth } from "@/lib/graphemes";
 import { cameraAfterWheel, cameraMovementAxis, type ScrollAxis } from "@/lib/navigation";
@@ -46,7 +49,6 @@ import {
   Selection,
   isPointInSelection,
   selectionAutoPanVelocity,
-  selectionFromCursorDrag,
 } from "@/lib/types";
 
 type SaveState = "loading" | "pending" | "saving" | "saved" | "error";
@@ -88,6 +90,7 @@ type DragState =
       edge: SelectionResizeEdge;
       original: Selection;
       boundary: number;
+      worldBoundary?: number;
     };
 
 const DEFAULT_CAMERA: Camera = { x: 0, y: 0, zoom: 1 };
@@ -359,9 +362,9 @@ export default function PixelTextEditor() {
   }, []);
 
   useEffect(() => {
-    const bounds = (): Selection => editor.selection ? { ...editor.selection } : {
-      x1: editor.cursor.x, y1: editor.cursor.y,
-      x2: editor.cursor.x + 1, y2: editor.cursor.y + 1,
+    const bounds = (): Selection => {
+      const layout = getTextLayout(editor.document);
+      return editor.selection ? layout.selectionBounds(editor.selection) : editor.cursorBounds;
     };
     let previous = bounds();
     return editor.subscribe(() => {
@@ -449,6 +452,7 @@ export default function PixelTextEditor() {
       overwriteMode: editor.overwriteMode,
       selection: selectionDragPreview ?? editor.selection,
       composition,
+      typingStyle: editor.typingStyle,
       searchResults: editor.searchResults,
       activeSearchIndex: editor.searchIndex,
       searchLength,
@@ -469,10 +473,8 @@ export default function PixelTextEditor() {
     const input = textareaRef.current;
     if (input) {
       const rect = canvas.getBoundingClientRect();
-      const point = logicalToScreen(editor.cursor, cameraRef.current, {
-        width: rect.width,
-        height: rect.height,
-      });
+      const caret = getTextLayout(editor.document).caretRect(editor.cursor, editor.typingStyle);
+      const point = logicalToScreen({ x: caret.x1, y: caret.y1 }, cameraRef.current, rect);
       input.style.left = `${Math.min(rect.width - 2, Math.max(1, point.x))}px`;
       input.style.top = `${Math.min(rect.height - 2, Math.max(1, point.y))}px`;
     }
@@ -514,6 +516,7 @@ export default function PixelTextEditor() {
 
   const cancelComposition = useCallback(() => {
     if (!composingRef.current) return;
+    suppressInputRef.current = compositionRef.current;
     ignoreCompositionEndRef.current = true;
     composingRef.current = false;
     compositionRef.current = "";
@@ -529,6 +532,7 @@ export default function PixelTextEditor() {
   const finishCompositionBeforeCommand = useCallback(() => {
     if (!composingRef.current) return;
     const value = compositionRef.current;
+    suppressInputRef.current = value;
     ignoreCompositionEndRef.current = true;
     composingRef.current = false;
     compositionRef.current = "";
@@ -543,16 +547,17 @@ export default function PixelTextEditor() {
 
   const centerOn = useCallback(
     (position: Position, horizontalOffset = 0) => {
-      setCamera({
-        ...cameraRef.current,
-        x: position.x + horizontalOffset,
-        y: position.y + 0.5,
-      });
+      const layout = getTextLayout(editor.document);
+      const world = layout.toWorld({ x: position.x + horizontalOffset, y: position.y });
+      setCamera({ ...cameraRef.current, x: world.x, y: world.y + layout.rowHeight(position.y) / 2 });
     },
-    [setCamera],
+    [editor, setCamera],
   );
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    // A fresh keystroke is a new input, even when it repeats the last IME text.
+    // Late composition input after a toolbar command has no intervening keydown.
+    if (!composingRef.current && !event.nativeEvent.isComposing && event.keyCode !== 229) suppressInputRef.current = "";
     const cursorCommands: Record<string, [number, number]> = {
       ArrowLeft: [-1, 0],
       ArrowRight: [1, 0],
@@ -601,6 +606,15 @@ export default function PixelTextEditor() {
     const handleGlobalKeyDown = (event: globalThis.KeyboardEvent) => {
       const commandKey = event.ctrlKey || event.metaKey;
       const key = event.key.toLowerCase();
+      if (commandKey && ["b", "i", "u"].includes(key) &&
+        (event.target === textareaRef.current || (event.target instanceof Element && event.target.closest(".formatting-tools")))) {
+        event.preventDefault(); event.stopPropagation();
+        finishCompositionBeforeCommand();
+        runAction(() => editor.toggleStyle(key === "b" ? "bold" : key === "i" ? "italic" : "underline"));
+        focusInput();
+        return;
+      }
+      if (event.key === "Escape" && event.target instanceof Element && event.target.closest(".font-size-input")) return;
       if (commandKey && key === "z") {
         event.preventDefault();
         event.stopPropagation();
@@ -678,6 +692,7 @@ export default function PixelTextEditor() {
   };
 
   const handleCompositionStart = () => {
+    suppressInputRef.current = "";
     composingRef.current = true;
     ignoreCompositionEndRef.current = false;
     compositionRef.current = "";
@@ -692,6 +707,8 @@ export default function PixelTextEditor() {
   const handleCompositionEnd = (event: CompositionEvent<HTMLTextAreaElement>) => {
     if (ignoreCompositionEndRef.current) {
       ignoreCompositionEndRef.current = false;
+      suppressInputRef.current = event.data || suppressInputRef.current;
+      if (textareaRef.current) textareaRef.current.value = "";
       return;
     }
     const value = event.data || compositionRef.current;
@@ -708,6 +725,7 @@ export default function PixelTextEditor() {
     event.preventDefault();
     runAction(() => {
       event.clipboardData.setData("text/plain", editor.copySelection());
+      event.clipboardData.setData(RICH_TEXT_MIME, copyRichText(editor));
     });
   };
 
@@ -715,7 +733,7 @@ export default function PixelTextEditor() {
     event.preventDefault();
     finishCompositionBeforeCommand();
     const text = event.clipboardData.getData("text/plain");
-    runAction(() => editor.insertText(text));
+    runAction(() => editor.insertText(text, readRichText(event.clipboardData.getData(RICH_TEXT_MIME), text)));
     focusInput();
   };
 
@@ -730,6 +748,7 @@ export default function PixelTextEditor() {
       event.clientY - rect.top,
       cameraRef.current,
       { width: rect.width, height: rect.height },
+      editor.document,
     );
     if (!Number.isSafeInteger(position.x) || !Number.isSafeInteger(position.y)) {
       showError(new EditorError("이 위치에는 커서를 놓을 수 없습니다."));
@@ -746,13 +765,14 @@ export default function PixelTextEditor() {
     if (!canvas || !selection) return null;
     const rect = canvas.getBoundingClientRect();
     const viewport = { width: rect.width, height: rect.height };
+    const bounds = getTextLayout(editor.document).selectionBounds(selection);
     const topLeft = logicalToScreen(
-      { x: selection.x1, y: selection.y1 },
+      { x: bounds.x1, y: bounds.y1 },
       cameraRef.current,
       viewport,
     );
     const bottomRight = logicalToScreen(
-      { x: selection.x2, y: selection.y2 },
+      { x: bounds.x2, y: bounds.y2 },
       cameraRef.current,
       viewport,
     );
@@ -947,29 +967,44 @@ export default function PixelTextEditor() {
     const metrics = cellMetrics(current);
     if (drag.kind === "resize") {
       const horizontal = isHorizontalResizeEdge(drag.edge);
-      const boundary = Math.round(horizontal
-        ? current.x + (clientX - rect.left - rect.width / 2) / metrics.width
-        : current.y + (clientY - rect.top - rect.height / 2) / metrics.height);
+      const layout = getTextLayout(editor.document);
+      const world = {
+        x: current.x + (clientX - rect.left - rect.width / 2) / metrics.width,
+        y: horizontal ? layout.toWorld({ x: 0, y: drag.original.y1 }).y
+          : current.y + (clientY - rect.top - rect.height / 2) / metrics.height,
+      };
+      const logical = layout.toLogical(world);
+      const boundary = Math.round(horizontal ? logical.x : logical.y);
       if (!Number.isSafeInteger(boundary)) return;
       if (drag.edge === "left") drag.boundary = Math.min(boundary, drag.original.x2 - 1);
       else if (drag.edge === "right") drag.boundary = Math.max(boundary, drag.original.x1 + 1);
       else if (drag.edge === "top") drag.boundary = Math.min(boundary, drag.original.y2 - 1);
       else drag.boundary = Math.max(boundary, drag.original.y1 + 1);
+      const originalBounds = layout.selectionBounds(drag.original);
+      if (horizontal) {
+        drag.worldBoundary = layout.toWorld({ x: drag.boundary, y: drag.original.y1 }).x;
+        setSelectionResizePreview(layout.selectionForColumns(
+          drag.edge === "left" ? drag.worldBoundary : originalBounds.x1,
+          drag.edge === "right" ? drag.worldBoundary : originalBounds.x2,
+          drag.original.y1, drag.original.y2,
+        ));
+        return;
+      }
       const preview = { ...drag.original };
       if (drag.edge === "left") preview.x1 = drag.boundary;
       else if (drag.edge === "right") preview.x2 = drag.boundary;
       else if (drag.edge === "top") preview.y1 = drag.boundary;
       else preview.y2 = drag.boundary;
-      setSelectionResizePreview(preview);
+      setSelectionResizePreview(drag.original.rows ? layout.selectionForColumns(originalBounds.x1, originalBounds.x2, preview.y1, preview.y2) : preview);
       return;
     }
-    const cell = screenToCell(clientX - rect.left, clientY - rect.top, current, rect);
+    const cell = screenToCell(clientX - rect.left, clientY - rect.top, current, rect, editor.document);
     if (!Number.isSafeInteger(cell.x) || !Number.isSafeInteger(cell.y)) return;
     if (drag.kind === "select") {
       drag.moved = drag.moved || cell.x !== drag.anchor.x || cell.y !== drag.anchor.y;
       if (!drag.moved) return;
       // Keep the anchor and pointer bounds stable until the gesture is committed.
-      setSelectionDragPreview(selectionFromCursorDrag(drag.anchor, cell));
+      setSelectionDragPreview(getTextLayout(editor.document).selectionFromDrag(drag.anchor, cell));
       return;
     }
     drag.dx = cell.x - drag.start.x;
@@ -998,7 +1033,7 @@ export default function PixelTextEditor() {
     ) {
       runAction(() => {
         if (isHorizontalResizeEdge(drag.edge)) {
-          editor.resizeSelectionHorizontal(drag.edge, drag.boundary);
+          editor.resizeSelectionHorizontal(drag.edge, drag.boundary, drag.worldBoundary);
         } else {
           editor.resizeSelectionVertical(drag.edge, drag.boundary);
         }
@@ -1013,7 +1048,7 @@ export default function PixelTextEditor() {
       const cell = pointerCell(event);
       if (cell) {
         runAction(() => {
-          editor.setSelection(selectionFromCursorDrag(drag.anchor, cell));
+          editor.setSelection(getTextLayout(editor.document).selectionFromDrag(drag.anchor, cell));
           // Reveal the completed selection, without first scrolling to a snapped cursor.
           editor.setCursor(cell, false);
         });
@@ -1212,7 +1247,7 @@ export default function PixelTextEditor() {
       event.clientY - rect.top,
       transform,
     );
-    const contentBounds = constrainToContent ? editor.document.bounds() : null;
+    const contentBounds = constrainToContent ? getTextLayout(editor.document).bounds : null;
     const target = contentBounds
       ? clampMinimapTarget(world, contentBounds)
       : world;
@@ -1242,6 +1277,11 @@ export default function PixelTextEditor() {
           </span>
           <span>PixelText</span>
         </div>
+
+        <FormattingToolbar state={editor.formatting} disabled={!ready}
+          onToggle={(key) => runAction(() => editor.toggleStyle(key))}
+          onStyle={(style) => runAction(() => editor.applyStyle(style))}
+          beforeCommand={finishCompositionBeforeCommand} focusEditor={focusInput} />
 
         <nav className="toolbar" aria-label="편집 도구">
           <div className="tool-group history-tools">
@@ -1578,6 +1618,8 @@ export default function PixelTextEditor() {
               <div><dt>확대 · 축소</dt><dd><kbd>Ctrl</kbd> + 휠</dd></div>
               <div><dt>미니맵 확대 · 축소</dt><dd>미니맵 위 <kbd>Ctrl</kbd> + 휠</dd></div>
               <div><dt>입력 모드</dt><dd><kbd>Insert</kbd> 삽입 · 덮어쓰기 전환</dd></div>
+              <div><dt>굵게 · 기울임 · 밑줄</dt><dd><kbd>Ctrl/Cmd</kbd> + <kbd>B / I / U</kbd></dd></div>
+              <div><dt>글자 크기</dt><dd>상단 숫자 입력 후 <kbd>Enter</kbd> · A− / A+</dd></div>
               <div><dt>실행 취소</dt><dd><kbd>Ctrl</kbd> + <kbd>Z</kbd></dd></div>
               <div><dt>다시 실행</dt><dd><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Z</kbd></dd></div>
             </dl>

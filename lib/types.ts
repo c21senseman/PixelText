@@ -1,3 +1,5 @@
+import type { CellContent, TextStyle } from "./formatting";
+
 export const CHUNK_SIZE = 64;
 export const CHUNK_CELL_COUNT = CHUNK_SIZE * CHUNK_SIZE;
 export const MIN_ZOOM = 0.05;
@@ -29,6 +31,9 @@ export type Selection = {
   y1: number;
   x2: number;
   y2: number;
+  // Per-row logical ranges preserve a rectangular pointer selection when
+  // different font advances map the same screen edge to different columns.
+  rows?: ReadonlyArray<{ y: number; x1: number; x2: number }>;
 };
 
 export type Bookmark = {
@@ -43,16 +48,19 @@ export type Change = {
   y: number;
   before: string | null;
   after: string | null;
+  beforeStyle: TextStyle;
+  afterStyle: TextStyle;
 };
 
 export type EditorSnapshot = {
   cursor: Position;
   selection: Selection | null;
   selectionReflow: SelectionReflow | null;
+  typingStyle: TextStyle;
 };
 
 export type SelectionReflowLine = {
-  readonly cells: ReadonlyArray<string | null>;
+  readonly cells: ReadonlyArray<CellContent | null>;
   readonly lineStartX: number;
 };
 
@@ -102,11 +110,25 @@ export function safeAdd(value: number, delta: number): number {
 
 export function normalizeSelection(selection: Selection): Selection {
   return {
+    ...(selection.rows ? { rows: selection.rows } : {}),
     x1: Math.min(selection.x1, selection.x2),
     y1: Math.min(selection.y1, selection.y2),
     x2: Math.max(selection.x1, selection.x2),
     y2: Math.max(selection.y1, selection.y2),
   };
+}
+
+export function selectionRowRange(selection: Selection, y: number): { x1: number; x2: number } {
+  const rows = selection.rows;
+  if (!rows) return selection;
+  let low = 0;
+  let high = rows.length;
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    if (rows[mid].y < y) low = mid + 1;
+    else high = mid;
+  }
+  return rows[low]?.y === y ? rows[low] : selection;
 }
 
 export function selectionFromCursorDrag(
@@ -170,9 +192,10 @@ export function isPointInSelection(
   selection: Selection | null,
 ): boolean {
   if (!selection) return false;
+  const range = selectionRowRange(selection, position.y);
   return (
-    position.x >= selection.x1 &&
-    position.x < selection.x2 &&
+    position.x >= range.x1 &&
+    position.x < range.x2 &&
     position.y >= selection.y1 &&
     position.y < selection.y2
   );

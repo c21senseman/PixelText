@@ -1,4 +1,6 @@
 import { SparseDocument } from "./document";
+import { getTextLayout } from "./layout";
+import { BASE_FONT_SIZE, DEFAULT_TEXT_STYLE, cellStyle, cellText, parseTextStyle, sameStyle, type CellContent, type FormattingState, type StyleToggle, type TextStyle } from "./formatting";
 import {
   assertValidCellValue,
   graphemeWidth,
@@ -23,6 +25,8 @@ import {
   cloneSelection,
   normalizeSelection,
   safeAdd,
+  selectionRowRange,
+  isPointInSelection,
 } from "./types";
 
 const HISTORY_LIMIT = 500;
@@ -35,11 +39,13 @@ function snapshotState(
   cursor: Position,
   selection: Selection | null,
   selectionReflow: SelectionReflow | null,
+  typingStyle: TextStyle,
 ): EditorSnapshot {
   return {
     cursor: { ...cursor },
     selection: cloneSelection(selection),
     selectionReflow,
+    typingStyle,
   };
 }
 
@@ -53,6 +59,7 @@ function translateSelection(
     y1: safeAdd(selection.y1, dy),
     x2: safeAdd(selection.x2, dx),
     y2: safeAdd(selection.y2, dy),
+    ...(selection.rows ? { rows: selection.rows.map((row) => ({ y: safeAdd(row.y, dy), x1: safeAdd(row.x1, dx), x2: safeAdd(row.x2, dx) })) } : {}),
   };
 }
 
@@ -87,6 +94,13 @@ class Transaction {
 
   constructor(private readonly document: SparseDocument) {}
 
+  read(x: number, y: number): CellContent | null {
+    const text = this.get(x, y);
+    if (!text) return text;
+    const style = this.changes.get(coordinateKey(x, y))?.afterStyle ?? this.document.getStyle(x, y);
+    return { text, style };
+  }
+
   get(x: number, y: number): string | null {
     assertSafePosition({ x, y });
     const pending = this.changes.get(coordinateKey(x, y));
@@ -100,13 +114,16 @@ class Transaction {
     return null;
   }
 
-  set(x: number, y: number, after: string | null): void {
+  set(x: number, y: number, content: CellContent | null): void {
     assertSafePosition({ x, y });
+    const after = content === null ? null : cellText(content);
     const nextValue = after === " " ? null : after;
+    const afterStyle = nextValue && content ? cellStyle(content) : DEFAULT_TEXT_STYLE;
     const key = coordinateKey(x, y);
     const existing = this.changes.get(key);
     if (existing) {
       existing.after = nextValue;
+      existing.afterStyle = afterStyle;
       return;
     }
     this.changes.set(key, {
@@ -114,6 +131,8 @@ class Transaction {
       y,
       before: this.document.getCell(x, y),
       after: nextValue,
+      beforeStyle: this.document.getStyle(x, y),
+      afterStyle,
     });
   }
 
@@ -147,7 +166,7 @@ class Transaction {
     return Array.from(this.changes.values(), (change) => ({
       ...change, after: change.after === "" ? null : change.after,
     })).filter(
-      (change) => change.before !== change.after,
+      (change) => change.before !== change.after || !sameStyle(change.beforeStyle, change.afterStyle),
     );
   }
 }
@@ -168,10 +187,12 @@ export class EditorModel {
   bookmarks: Bookmark[] = [];
   searchResults: SearchResult[] = [];
   searchIndex = -1;
+  typingStyle: TextStyle = DEFAULT_TEXT_STYLE;
 
   private undoStack: HistoryBatch[] = [];
   private redoStack: HistoryBatch[] = [];
   private selectionReflow: SelectionReflow | null = null;
+  private preferredCursorX: number | null = null;
   private readonly listeners = new Set<EditorListener>();
 
   constructor(document = new SparseDocument()) {
@@ -195,9 +216,64 @@ export class EditorModel {
     return this.redoStack.length > 0;
   }
 
+  get cursorBounds(): Selection {
+    const text = this.document.getCell(this.cursor.x, this.cursor.y);
+    const style = this.overwriteMode && text ? this.document.getStyle(this.cursor.x, this.cursor.y) : this.typingStyle;
+    return getTextLayout(this.document).caretRect(this.cursor, style, this.overwriteMode ? graphemeWidth(text ?? " ") : 1);
+  }
+
+  get formatting(): FormattingState {
+    if (!this.selection) return { ...this.typingStyle };
+    let state: FormattingState | null = null;
+    const s = this.selection;
+    this.document.forEachInSelection(s, (x, y) => {
+      const style = this.document.getStyle(x, y);
+      if (state === null) state = { ...style };
+      else {
+        for (const key of ["bold", "italic", "underline", "strikethrough"] as const) {
+          if (state[key] !== style[key]) state[key] = null;
+        }
+        if (state.fontSize !== style.fontSize) state.fontSize = null;
+      }
+    }, true);
+    return state ?? { ...this.typingStyle };
+  }
+
+  private inheritTypingStyle(): void {
+    if (this.cursor.x === Number.MIN_SAFE_INTEGER) return;
+    const left = this.document.snapPosition({ x: this.cursor.x - 1, y: this.cursor.y });
+    if (this.document.getCell(left.x, left.y) !== null) this.typingStyle = this.document.getStyle(left.x, left.y);
+  }
+
+  toggleStyle(key: StyleToggle): void {
+    this.applyStyle({ [key]: this.formatting[key] !== true });
+  }
+
+  applyStyle(patch: Partial<TextStyle>): void {
+    const next = parseTextStyle({ ...this.typingStyle, ...patch });
+    if (!this.selection) {
+      this.typingStyle = next;
+      this.emit();
+      return;
+    }
+    const before = snapshotState(this.cursor, this.selection, this.selectionReflow, this.typingStyle);
+    const transaction = new Transaction(this.document);
+    const s = this.selection;
+    this.document.forEachInSelection(s, (x, y, text) => {
+      transaction.set(x, y, { text, style: parseTextStyle({ ...this.document.getStyle(x, y), ...patch }) });
+    }, true);
+    const reflow = this.selectionReflow && { lines: this.selectionReflow.lines.map((line) => ({
+      ...line, cells: line.cells.map((cell) => cell && ({ text: cellText(cell), style: parseTextStyle({ ...cellStyle(cell), ...patch }) })),
+    })) };
+    this.typingStyle = next;
+    this.commit(transaction, before, this.cursor, s, reflow);
+  }
+
   setCursor(position: Position, clearSelection = true): void {
     assertSafePosition(position);
     this.cursor = this.document.snapPosition(position);
+    this.preferredCursorX = null;
+    this.inheritTypingStyle();
     if (clearSelection) {
       this.selection = null;
       this.selectionReflow = null;
@@ -206,6 +282,14 @@ export class EditorModel {
   }
 
   moveCursor(dx: number, dy: number): void {
+    if (dx === 0 && dy !== 0) {
+      const layout = getTextLayout(this.document);
+      const preferred = this.preferredCursorX ?? layout.toWorld(this.cursor).x;
+      const y = safeAdd(this.cursor.y, dy);
+      this.setCursor({ x: layout.nearestCursorX(preferred, y), y });
+      this.preferredCursorX = preferred;
+      return;
+    }
     let x = safeAdd(this.cursor.x, dx);
     const y = safeAdd(this.cursor.y, dy);
     if (dx > 0 && dy === 0 && this.document.getRasterCell(x, y) === "") {
@@ -234,12 +318,25 @@ export class EditorModel {
     this.selectionReflow = null;
     if (!selection) {
       this.selection = null;
+      this.inheritTypingStyle();
       this.emit();
       return;
     }
     const normalized = normalizeSelection(selection);
     assertSafePosition({ x: normalized.x1, y: normalized.y1 });
     assertSafePosition({ x: normalized.x2, y: normalized.y2 });
+    if (normalized.rows) {
+      let previousY = Number.NEGATIVE_INFINITY;
+      for (const row of normalized.rows) {
+        assertSafePosition({ x: row.x1, y: row.y });
+        assertSafePosition({ x: row.x2, y: row.y });
+        if (row.y <= previousY || row.y < normalized.y1 || row.y >= normalized.y2 ||
+          row.x1 < normalized.x1 || row.x2 > normalized.x2 || row.x2 < row.x1) {
+          throw new EditorError("선택 영역의 행 범위가 올바르지 않습니다.");
+        }
+        previousY = row.y;
+      }
+    }
     this.selection =
       normalized.x1 === normalized.x2 || normalized.y1 === normalized.y2
         ? null
@@ -252,45 +349,45 @@ export class EditorModel {
     selection: Selection,
     x: number,
     y: number,
-  ): string | null {
-    const value = transaction.get(x, y);
-    if (value === "" && x === selection.x1) return null;
-    if (value && graphemeWidth(value) > selection.x2 - x) return null;
+  ): CellContent | null {
+    const range = selectionRowRange(selection, y);
+    if (x < range.x1 || x >= range.x2) return null;
+    const value = transaction.read(x, y);
+    if (value === "" && x === range.x1) return null;
+    if (value && graphemeWidth(cellText(value)) > range.x2 - x) return null;
     return value;
   }
 
   private clearSelectionInTransaction(transaction: Transaction): Position | null {
     const selection = this.selection;
     if (!selection) return null;
-    this.document.forEachInRect(
-      selection.x1,
-      selection.y1,
-      selection.x2,
-      selection.y2,
+    this.document.forEachInSelection(
+      selection,
       (x, y) => transaction.set(x, y, null),
       true,
     );
-    return { x: selection.x1, y: selection.y1 };
+    return { x: selectionRowRange(selection, selection.y1).x1, y: selection.y1 };
   }
 
   private clearSelectionAndPullLeft(
     transaction: Transaction,
     selection: Selection,
   ): Position {
-    const width = safeAdd(selection.x2, -selection.x1);
     const moving: Array<{
       fromX: number;
       toX: number;
       y: number;
-      value: string;
+      value: CellContent;
     }> = [];
 
     for (let y = selection.y1; y < selection.y2; y += 1) {
+      const range = selectionRowRange(selection, y);
+      const width = range.x2 - range.x1;
       // A boundary-crossing glyph stays intact, so this row cannot collapse.
-      if (transaction.get(selection.x1, y) === "" || transaction.get(selection.x2, y) === "") continue;
-      let x = selection.x2;
+      if (transaction.get(range.x1, y) === "" || transaction.get(range.x2, y) === "") continue;
+      let x = range.x2;
       while (transaction.isTextCell(x, y)) {
-        const value = transaction.get(x, y);
+        const value = transaction.read(x, y);
         if (value !== null) {
           moving.push({
             fromX: x,
@@ -310,7 +407,7 @@ export class EditorModel {
     for (const item of moving) {
       transaction.set(item.toX, item.y, item.value);
     }
-    return { x: selection.x1, y: selection.y1 };
+    return { x: selectionRowRange(selection, selection.y1).x1, y: selection.y1 };
   }
 
   private commit(
@@ -319,6 +416,7 @@ export class EditorModel {
     cursor: Position,
     selection: Selection | null,
     selectionReflow: SelectionReflow | null = null,
+    typingStyle: TextStyle = this.typingStyle,
   ): void {
     assertSafePosition(cursor);
     const changes = transaction.finalChanges();
@@ -329,9 +427,12 @@ export class EditorModel {
       }
     }
     for (const change of changes) {
-      this.document.setCell(change.x, change.y, change.after);
+      this.document.setCell(change.x, change.y, change.after, change.afterStyle);
     }
     this.cursor = this.document.snapPosition(cursor);
+    this.preferredCursorX = null;
+    this.typingStyle = typingStyle;
+    if (!selection) this.inheritTypingStyle();
     this.selection = cloneSelection(selection);
     this.selectionReflow = selection ? selectionReflow : null;
 
@@ -343,6 +444,7 @@ export class EditorModel {
           this.cursor,
           this.selection,
           this.selectionReflow,
+          this.typingStyle,
         ),
       });
       if (this.undoStack.length > HISTORY_LIMIT) this.undoStack.shift();
@@ -357,6 +459,7 @@ export class EditorModel {
     transaction: Transaction,
     position: Position,
     grapheme: string,
+    style = this.typingStyle,
   ): Position {
     const width = graphemeWidth(grapheme);
     const nextCursor = { x: safeAdd(position.x, width), y: position.y };
@@ -367,11 +470,11 @@ export class EditorModel {
       if (transaction.isTextCell(x, position.y)) end = safeAdd(x, 1);
     }
     while (end > position.x && transaction.isTextCell(end, position.y)) end = safeAdd(end, 1);
-    const moving: Array<[number, string | null]> = [];
-    for (let x = position.x; x < end; x += 1) moving.push([x, transaction.get(x, position.y)]);
+    const moving: Array<[number, CellContent | null]> = [];
+    for (let x = position.x; x < end; x += 1) moving.push([x, transaction.read(x, position.y)]);
     for (const [x] of moving) transaction.set(x, position.y, null);
     for (const [x, value] of moving) transaction.set(safeAdd(x, width), position.y, value);
-    transaction.set(position.x, position.y, grapheme);
+    transaction.set(position.x, position.y, { text: grapheme, style });
     if (width === 2) transaction.set(position.x + 1, position.y, "");
     return nextCursor;
   }
@@ -379,18 +482,20 @@ export class EditorModel {
   private insertBlank(
     transaction: Transaction,
     position: Position,
+    style = this.typingStyle,
   ): Position {
     if (transaction.isInterCharacterSpace(position.x, position.y)) {
       return { x: safeAdd(position.x, 1), y: position.y };
     }
 
-    return this.insertOne(transaction, position, " ");
+    return this.insertOne(transaction, position, " ", style);
   }
 
   private overwriteOne(
     transaction: Transaction,
     position: Position,
     grapheme: string,
+    style = this.typingStyle,
   ): Position {
     const width = graphemeWidth(grapheme);
     const nextCursor = { x: safeAdd(position.x, width), y: position.y };
@@ -398,12 +503,12 @@ export class EditorModel {
       if (transaction.get(x, position.y) === "") transaction.set(x - 1, position.y, null);
       transaction.set(x, position.y, null);
     }
-    transaction.set(position.x, position.y, grapheme);
+    transaction.set(position.x, position.y, { text: grapheme, style });
     if (width === 2) transaction.set(position.x + 1, position.y, "");
     return nextCursor;
   }
 
-  insertText(rawText: string): void {
+  insertText(rawText: string, styles?: ReadonlyMap<number, TextStyle>): void {
     const text = normalizeTextInput(rawText);
     if (text.length === 0) return;
     const lines = text.split("\n");
@@ -411,7 +516,7 @@ export class EditorModel {
     const width = segmentedLines.reduce(
       (maximum, line) => Math.max(maximum, line.reduce((sum, value) => {
         assertValidCellValue(value);
-        return sum + graphemeWidth(value);
+        return sum + graphemeWidth(cellText(value));
       }, 0)),
       0,
     );
@@ -420,29 +525,41 @@ export class EditorModel {
       this.cursor,
       this.selection,
       this.selectionReflow,
+      this.typingStyle,
     );
+    const inputStyle = { ...this.typingStyle };
+    const formatting = this.formatting;
+    for (const key of ["bold", "italic", "underline", "strikethrough"] as const) {
+      if (formatting[key] !== null) inputStyle[key] = formatting[key];
+    }
+    if (formatting.fontSize !== null) inputStyle.fontSize = formatting.fontSize;
+    if (styles) for (const style of styles.values()) parseTextStyle(style);
     const transaction = new Transaction(this.document);
     const selectionStart = this.clearSelectionInTransaction(transaction);
     const start = { ...(selectionStart ?? this.cursor) };
     if (transaction.get(start.x, start.y) === "") start.x = safeAdd(start.x, 1);
     let finalCursor = { ...start };
+    let textIndex = 0;
+    let lastStyle: TextStyle = inputStyle;
 
     for (let row = 0; row < segmentedLines.length; row += 1) {
       const y = safeAdd(start.y, row);
       let lineCursor: Position = { x: start.x, y };
       for (const grapheme of segmentedLines[row]) {
+        lastStyle = styles?.get(textIndex) ?? (styles ? DEFAULT_TEXT_STYLE : inputStyle);
+        textIndex += 1;
         if (this.overwriteMode) {
-          lineCursor = this.overwriteOne(transaction, lineCursor, grapheme);
+          lineCursor = this.overwriteOne(transaction, lineCursor, grapheme, lastStyle);
         } else if (grapheme === " ") {
-          lineCursor = this.insertBlank(transaction, lineCursor);
+          lineCursor = this.insertBlank(transaction, lineCursor, lastStyle);
         } else {
-          lineCursor = this.insertOne(transaction, lineCursor, grapheme);
+          lineCursor = this.insertOne(transaction, lineCursor, grapheme, lastStyle);
         }
       }
       finalCursor = lineCursor;
     }
 
-    this.commit(transaction, before, finalCursor, null);
+    this.commit(transaction, before, finalCursor, null, null, lastStyle);
   }
 
   private deleteAndPull(
@@ -458,10 +575,10 @@ export class EditorModel {
     }
     if (!transaction.isTextCell(lastX, y)) lastX -= 1;
 
-    const cells: Array<[number, string | null]> = [];
+    const cells: Array<[number, CellContent | null]> = [];
     for (let x = startX; x <= lastX; x += 1) {
       const sourceX = x <= Number.MAX_SAFE_INTEGER - width ? x + width : null;
-      cells.push([x, sourceX !== null && sourceX <= lastX ? transaction.get(sourceX, y) : null]);
+      cells.push([x, sourceX !== null && sourceX <= lastX ? transaction.read(sourceX, y) : null]);
       if (x === Number.MAX_SAFE_INTEGER) break;
     }
     for (const [x] of cells) transaction.set(x, y, null);
@@ -481,7 +598,7 @@ export class EditorModel {
     if (!transaction.isTextCell(endX, y)) endX -= 1;
 
     for (let sourceX = startX; sourceX <= endX; sourceX += 1) {
-      transaction.set(sourceX - 1, y, transaction.get(sourceX, y));
+      transaction.set(sourceX - 1, y, transaction.read(sourceX, y));
       if (sourceX === Number.MAX_SAFE_INTEGER) break;
     }
     transaction.set(endX, y, null);
@@ -561,9 +678,9 @@ export class EditorModel {
       }
     }
 
-    const moving: Array<{ from: Position; to: Position; value: string }> = [];
+    const moving: Array<{ from: Position; to: Position; value: CellContent }> = [];
     for (let currentX = position.x; currentX <= currentLineEnd; currentX += 1) {
-      const value = transaction.get(currentX, position.y);
+      const value = transaction.read(currentX, position.y);
       if (value !== null) {
         moving.push({
           from: { x: currentX, y: position.y },
@@ -578,7 +695,7 @@ export class EditorModel {
     }
     for (const current of queue) {
       if (current.y <= position.y) continue;
-      const value = transaction.get(current.x, current.y);
+      const value = transaction.read(current.x, current.y);
       if (value !== null) {
         moving.push({
           from: current,
@@ -616,6 +733,7 @@ export class EditorModel {
       this.cursor,
       this.selection,
       this.selectionReflow,
+      this.typingStyle,
     );
     const transaction = new Transaction(this.document);
     const selection = this.selection;
@@ -665,6 +783,7 @@ export class EditorModel {
       this.cursor,
       this.selection,
       this.selectionReflow,
+      this.typingStyle,
     );
     const transaction = new Transaction(this.document);
     const selectionStart = this.clearSelectionInTransaction(transaction);
@@ -710,6 +829,7 @@ export class EditorModel {
       this.cursor,
       this.selection,
       this.selectionReflow,
+      this.typingStyle,
     );
     const transaction = new Transaction(this.document);
     const selectionStart = this.clearSelectionInTransaction(transaction);
@@ -766,9 +886,9 @@ export class EditorModel {
       }
     }
 
-    const moving: Array<{ from: Position; to: Position; value: string }> = [];
+    const moving: Array<{ from: Position; to: Position; value: CellContent }> = [];
     for (const position of queue) {
-      const value = transaction.get(position.x, position.y);
+      const value = transaction.read(position.x, position.y);
       if (value === null) continue;
       if (position.y > cursor.y) {
         moving.push({
@@ -780,7 +900,7 @@ export class EditorModel {
     }
     const suffixStart = Math.max(cursor.x, lineStart);
     for (let x = suffixStart; x <= lineEnd; x += 1) {
-      const value = transaction.get(x, cursor.y);
+      const value = transaction.read(x, cursor.y);
       if (value !== null) {
         moving.push({
           from: { x, y: cursor.y },
@@ -829,6 +949,7 @@ export class EditorModel {
       this.cursor,
       this.selection,
       this.selectionReflow,
+      this.typingStyle,
     );
     const transaction = new Transaction(this.document);
     const start = this.clearSelectionInTransaction(transaction);
@@ -840,17 +961,12 @@ export class EditorModel {
     if (!selection) return false;
     const target = translateSelection(selection, dx, dy);
     let overlaps = false;
-    this.document.forEachInRect(
-      target.x1,
-      target.y1,
-      target.x2,
-      target.y2,
+    this.document.forEachInSelection(
+      target,
       (x, y, value) => {
         const belongsToSelection =
-          x >= selection.x1 &&
-          graphemeWidth(value) <= selection.x2 - x &&
-          y >= selection.y1 &&
-          y < selection.y2;
+          isPointInSelection({ x, y }, selection) &&
+          graphemeWidth(value) <= selectionRowRange(selection, y).x2 - x;
         if (!belongsToSelection) overlaps = true;
       },
     );
@@ -861,9 +977,9 @@ export class EditorModel {
     transaction: Transaction,
     start: Position,
     clearedPath: ReadonlySet<string>,
-  ): Map<string, { x: number; y: number; value: string }> {
+  ): Map<string, { x: number; y: number; value: CellContent }> {
     if (transaction.get(start.x, start.y) === null) return new Map();
-    const block = new Map<string, { x: number; y: number; value: string }>();
+    const block = new Map<string, { x: number; y: number; value: CellContent }>();
     const visited = new Set<string>();
     const queue = [start];
 
@@ -873,7 +989,7 @@ export class EditorModel {
       if (visited.has(key)) continue;
       visited.add(key);
 
-      const value = transaction.get(position.x, position.y);
+      const value = transaction.read(position.x, position.y);
       const isPreservedGap =
         value === null &&
         !clearedPath.has(key) &&
@@ -900,10 +1016,10 @@ export class EditorModel {
 
   private shiftTextBlockOneStep(
     transaction: Transaction,
-    moving: Map<string, { x: number; y: number; value: string }>,
+    moving: Map<string, { x: number; y: number; value: CellContent }>,
     step: Position,
     clearedPath: ReadonlySet<string>,
-  ): Map<string, { x: number; y: number; value: string }> {
+  ): Map<string, { x: number; y: number; value: CellContent }> {
     const cells = Array.from(moving.values());
 
     for (let index = 0; index < cells.length; index += 1) {
@@ -937,7 +1053,7 @@ export class EditorModel {
       value: cell.value,
     }));
     for (const cell of cells) transaction.set(cell.x, cell.y, null);
-    const shifted = new Map<string, { x: number; y: number; value: string }>();
+    const shifted = new Map<string, { x: number; y: number; value: CellContent }>();
     for (const destination of destinations) {
       transaction.set(destination.x, destination.y, destination.value);
       shifted.set(coordinateKey(destination.x, destination.y), destination);
@@ -947,7 +1063,7 @@ export class EditorModel {
 
   private pushTextBlockOutOfTarget(
     transaction: Transaction,
-    block: Map<string, { x: number; y: number; value: string }>,
+    block: Map<string, { x: number; y: number; value: CellContent }>,
     step: Position,
     target: Selection,
     clearedSource: ReadonlySet<string>,
@@ -955,11 +1071,7 @@ export class EditorModel {
     let moving = block;
     while (
       Array.from(moving.values()).some(
-        (cell) =>
-          cell.x >= target.x1 &&
-          cell.x < target.x2 &&
-          cell.y >= target.y1 &&
-          cell.y < target.y2,
+        (cell) => isPointInSelection(cell, target),
       )
     ) {
       moving = this.shiftTextBlockOneStep(
@@ -985,7 +1097,7 @@ export class EditorModel {
     const clearedSource = new Set<string>();
     for (let y = selection.y1; y < selection.y2; y += 1) {
       for (let x = selection.x1; x < selection.x2; x += 1) {
-        clearedSource.add(coordinateKey(x, y));
+        if (isPointInSelection({ x, y }, selection)) clearedSource.add(coordinateKey(x, y));
       }
     }
 
@@ -993,7 +1105,7 @@ export class EditorModel {
       let overlap: Position | null = null;
       for (let y = target.y1; y < target.y2; y += 1) {
         for (let x = target.x1; x < target.x2; x += 1) {
-          if ((!collisionCells || collisionCells.has(coordinateKey(x, y))) && transaction.get(x, y) !== null) {
+          if (isPointInSelection({ x, y }, target) && (!collisionCells || collisionCells.has(coordinateKey(x, y))) && transaction.get(x, y) !== null) {
             overlap ??= { x, y };
             break;
           }
@@ -1025,13 +1137,10 @@ export class EditorModel {
     if (!selection || (dx === 0 && dy === 0)) return;
     const target = translateSelection(selection, dx, dy);
 
-    const snapshot: Array<{ x: number; y: number; value: string }> = [];
-    this.document.forEachInRect(
-      selection.x1,
-      selection.y1,
-      selection.x2,
-      selection.y2,
-      (x, y, value) => snapshot.push({ x, y, value }),
+    const snapshot: Array<{ x: number; y: number; value: CellContent }> = [];
+    this.document.forEachInSelection(
+      selection,
+      (x, y, text) => snapshot.push({ x, y, value: { text, style: this.document.getStyle(x, y) } }),
       true,
     );
     const targetHasExistingText = this.selectionMoveTargetOverlapsText(dx, dy);
@@ -1040,13 +1149,11 @@ export class EditorModel {
       this.cursor,
       this.selection,
       this.selectionReflow,
+      this.typingStyle,
     );
     const transaction = new Transaction(this.document);
-    this.document.forEachInRect(
-      selection.x1,
-      selection.y1,
-      selection.x2,
-      selection.y2,
+    this.document.forEachInSelection(
+      selection,
       (x, y) => transaction.set(x, y, null),
       true,
     );
@@ -1062,11 +1169,8 @@ export class EditorModel {
         pushDirection,
       );
     } else {
-      this.document.forEachInRect(
-        target.x1,
-        target.y1,
-        target.x2,
-        target.y2,
+      this.document.forEachInSelection(
+        target,
         (x, y) => transaction.set(x, y, null),
       );
     }
@@ -1088,11 +1192,11 @@ export class EditorModel {
     sourceWidth: number,
   ): SelectionReflow {
     const lines: Array<{
-      cells: ReadonlyArray<string | null>;
+      cells: ReadonlyArray<CellContent | null>;
       lineStartX: number;
     }> = [];
     for (let y = selection.y1; y < selection.y2; y += 1) {
-      const row: Array<string | null> = [];
+      const row: Array<CellContent | null> = [];
       let lastOccupied = -1;
       let firstTextCellX: number | null = null;
       for (let offset = 0; offset < sourceWidth; offset += 1) {
@@ -1100,7 +1204,7 @@ export class EditorModel {
         const value = this.selectedRasterCell(transaction, selection, x, y);
         row.push(value);
         if (value !== null) lastOccupied = offset;
-        if (firstTextCellX === null && (value !== null || transaction.isInterCharacterSpace(x, y))) {
+        if (firstTextCellX === null && isPointInSelection({ x, y }, selection) && (value !== null || transaction.isInterCharacterSpace(x, y))) {
           firstTextCellX = x;
         }
       }
@@ -1109,7 +1213,7 @@ export class EditorModel {
         lines.push({ cells: [], lineStartX: selection.x1 });
       } else {
         const lineStartX = this.textLineStart(transaction, firstTextCellX, y);
-        const sourceStartX = Math.max(selection.x1, lineStartX);
+        const sourceStartX = Math.max(selectionRowRange(selection, y).x1, lineStartX);
         lines.push({
           cells: row.slice(
             safeAdd(sourceStartX, -selection.x1),
@@ -1126,6 +1230,7 @@ export class EditorModel {
   resizeSelectionHorizontal(
     edge: "left" | "right",
     boundaryX: number,
+    worldBoundary?: number,
   ): void {
     const selection = this.selection;
     if (!selection) return;
@@ -1141,12 +1246,26 @@ export class EditorModel {
     const sourceHeight = safeAdd(selection.y2, -selection.y1);
     const targetWidth = safeAdd(targetX2, -targetX1);
     assertTextRasterSize(sourceWidth, sourceHeight);
+    const layout = getTextLayout(this.document);
+    const sourceBounds = layout.selectionBounds(selection);
+    let visualReflow = !!selection.rows;
+    this.document.forEachInSelection(selection, (x, y) => {
+      if (this.document.getStyle(x, y).fontSize !== BASE_FONT_SIZE) visualReflow = true;
+    }, true);
+    const boundary = worldBoundary ?? layout.toWorld({ x: boundaryX, y: selection.y1 }).x;
+    const left = edge === "left" ? boundary : sourceBounds.x1;
+    const right = edge === "right" ? boundary : sourceBounds.x2;
+    const visualWidth = right - left;
+    if (!Number.isFinite(visualWidth) || visualWidth <= 0) throw new EditorError("선택 영역의 너비는 양수여야 합니다.");
+    const shrinking = visualReflow ? visualWidth < sourceBounds.x2 - sourceBounds.x1 - 1e-9 : targetWidth < sourceWidth;
+    const unchanged = visualReflow ? Math.abs(visualWidth - (sourceBounds.x2 - sourceBounds.x1)) < 1e-9 : targetWidth === sourceWidth;
 
-    if (targetWidth === sourceWidth) return;
+    if (unchanged) return;
 
-    if (targetWidth > sourceWidth && !this.selectionReflow) {
+    if (!shrinking && !this.selectionReflow) {
       assertTextRasterSize(targetWidth, sourceHeight);
-      this.selection = { ...selection, x1: targetX1, x2: targetX2 };
+      this.selection = visualReflow ? layout.selectionForColumns(left, right, selection.y1, selection.y2)
+        : { ...selection, x1: targetX1, x2: targetX2 };
       this.emit();
       return;
     }
@@ -1155,67 +1274,83 @@ export class EditorModel {
     const selectionReflow =
       this.selectionReflow ??
       this.captureSelectionReflow(transaction, selection, sourceWidth);
-    const placed: Array<{ x: number; y: number; value: string }> = [];
-    const rowLayouts: Array<{ startX: number; usedEndX: number; lineIndex: number }> = [];
+    const placed: Array<{ x: number; y: number; value: CellContent }> = [];
+    const rowLayouts: Array<{ startX: number; usedEndX: number; lineIndex: number; remaining: number }> = [];
     let targetHeight = 0;
     for (const [lineIndex, line] of selectionReflow.lines.entries()) {
-      const widest = line.cells.some((value) => value && graphemeWidth(value) === 2) ? 2 : 1;
-      if (targetWidth < widest) {
+      const widest = line.cells.some((value) => value && graphemeWidth(cellText(value)) === 2) ? 2 : 1;
+      const widestVisual = line.cells.reduce((max, value) => Math.max(max, value ? graphemeWidth(cellText(value)) * cellStyle(value).fontSize / BASE_FONT_SIZE : 0), 0);
+      if (visualReflow && widestVisual > visualWidth + 1e-9) throw new EditorError("선택 너비가 가장 큰 글자보다 좁습니다. 글자 크기를 줄이거나 영역을 넓혀 주세요.");
+      if (!visualReflow && targetWidth < widest) {
         throw new EditorError("전각 문자를 포함한 선택 영역의 너비는 두 칸 이상이어야 합니다.");
       }
-      const startX = line.lineStartX >= targetX1 && line.lineStartX <= targetX2 - widest
+      const startX = line.lineStartX >= targetX1 && line.lineStartX <= targetX2 - widest &&
+        (!visualReflow || line.lineStartX - targetX1 + widestVisual <= visualWidth)
         ? line.lineStartX : targetX1;
       let x = startX;
       let row = targetHeight;
-      rowLayouts[row] = { startX, usedEndX: startX, lineIndex };
-      for (const value of line.cells) {
+      const available = visualWidth - (startX - targetX1);
+      let used = 0;
+      let previousScale = 1;
+      rowLayouts[row] = { startX, usedEndX: startX, lineIndex, remaining: available };
+      for (const [index, value] of line.cells.entries()) {
         if (value === "") continue;
-        const width = value === null ? 1 : graphemeWidth(value);
-        if (x + width > targetX2) {
+        const width = value === null ? 1 : graphemeWidth(cellText(value));
+        const scale = value ? cellStyle(value).fontSize / BASE_FONT_SIZE
+          : (line.cells[index + 1] ? previousScale : 1);
+        const advance = width * scale;
+        if (visualReflow ? used > 0 && used + advance > available + 1e-9 : x + width > targetX2) {
           x = startX; row += 1;
-          rowLayouts[row] = { startX, usedEndX: startX, lineIndex };
+          used = 0;
+          rowLayouts[row] = { startX, usedEndX: startX, lineIndex, remaining: available };
         }
         if (value !== null) placed.push({ x, y: safeAdd(selection.y1, row), value });
         x = safeAdd(x, width);
+        used += advance;
+        previousScale = value ? scale : 1;
         rowLayouts[row].usedEndX = x;
+        rowLayouts[row].remaining = Math.max(0, available - used);
       }
       targetHeight = row + 1;
     }
     assertTextRasterSize(targetWidth, targetHeight);
-    const target: Selection = {
+    let target: Selection = {
       x1: targetX1, y1: selection.y1, x2: targetX2,
       y2: safeAdd(selection.y1, targetHeight),
     };
+    if (visualReflow) {
+      const rows = rowLayouts.map((row, index) => ({ y: safeAdd(selection.y1, index), x1: targetX1,
+        x2: safeAdd(row.usedEndX, Math.floor(row.remaining + 1e-9)) }));
+      let maxX = targetX1 + 1;
+      for (const row of rows) maxX = Math.max(maxX, row.x2);
+      target = { ...target, x2: maxX, rows };
+      assertTextRasterSize(target.x2 - target.x1, targetHeight);
+    }
 
     const before = snapshotState(
       this.cursor,
       selection,
       this.selectionReflow,
+      this.typingStyle,
     );
-    this.document.forEachInRect(
-      selection.x1,
-      selection.y1,
-      selection.x2,
-      selection.y2,
+    this.document.forEachInSelection(
+      selection,
       (x, y) => transaction.set(x, y, null),
       true,
     );
     if (this.overwriteMode) {
-      this.document.forEachInRect(
-        target.x1,
-        target.y1,
-        target.x2,
-        target.y2,
+      this.document.forEachInSelection(
+        target,
         (x, y) => transaction.set(x, y, null),
       );
     } else {
-      const pushDirection = targetWidth < sourceWidth
+      const pushDirection = shrinking
         ? { x: 0, y: 1 }
         : { x: edge === "left" ? -1 : 1, y: 0 };
       // Only real glyph footprints collide. Empty space in the selection can adopt text.
       const collisionCells = new Set<string>();
       for (const cell of placed) {
-        for (let offset = 0; offset < graphemeWidth(cell.value); offset += 1) {
+        for (let offset = 0; offset < graphemeWidth(cellText(cell.value)); offset += 1) {
           collisionCells.add(coordinateKey(cell.x + offset, cell.y));
         }
       }
@@ -1230,13 +1365,13 @@ export class EditorModel {
     }
     for (const cell of placed) {
       transaction.set(cell.x, cell.y, cell.value);
-      if (graphemeWidth(cell.value) === 2) transaction.set(cell.x + 1, cell.y, "");
+      if (graphemeWidth(cellText(cell.value)) === 2) transaction.set(cell.x + 1, cell.y, "");
     }
     // Preserve the original logical line boundaries when adopting new text.
     let nextReflow = selectionReflow;
     if (adoptedText) {
       const lines = selectionReflow.lines.map((line) => ({
-        cells: [] as Array<string | null>, lineStartX: line.lineStartX,
+        cells: [] as Array<CellContent | null>, lineStartX: line.lineStartX,
       }));
       for (const [row, layout] of rowLayouts.entries()) {
         const y = safeAdd(target.y1, row);
@@ -1279,7 +1414,11 @@ export class EditorModel {
     }
     if (targetY1 === selection.y1 && targetY2 === selection.y2) return;
 
-    this.selection = { ...selection, y1: targetY1, y2: targetY2 };
+    if (selection.rows) {
+      const layout = getTextLayout(this.document);
+      const bounds = layout.selectionBounds(selection);
+      this.selection = layout.selectionForColumns(bounds.x1, bounds.x2, targetY1, targetY2);
+    } else this.selection = { ...selection, y1: targetY1, y2: targetY2 };
     this.selectionReflow = null;
     this.emit();
   }
@@ -1294,8 +1433,9 @@ export class EditorModel {
     const transaction = new Transaction(this.document);
     for (let y = selection.y1; y < selection.y2; y += 1) {
       let line = "";
-      for (let x = selection.x1; x < selection.x2; x += 1) {
-        line += this.selectedRasterCell(transaction, selection, x, y) ?? " ";
+      const range = selectionRowRange(selection, y);
+      for (let x = range.x1; x < range.x2; x += 1) {
+        line += cellText(this.selectedRasterCell(transaction, selection, x, y) ?? " ");
       }
       lines.push(line);
     }
@@ -1412,12 +1552,14 @@ export class EditorModel {
   undo(): void {
     const batch = this.undoStack.pop();
     if (!batch) return;
+    this.preferredCursorX = null;
     for (const change of batch.changes) {
-      this.document.setCell(change.x, change.y, change.before);
+      this.document.setCell(change.x, change.y, change.before, change.beforeStyle);
     }
     this.cursor = { ...batch.before.cursor };
     this.selection = cloneSelection(batch.before.selection);
     this.selectionReflow = batch.before.selectionReflow;
+    this.typingStyle = batch.before.typingStyle;
     this.redoStack.push(batch);
     this.searchResults = [];
     this.searchIndex = -1;
@@ -1427,12 +1569,14 @@ export class EditorModel {
   redo(): void {
     const batch = this.redoStack.pop();
     if (!batch) return;
+    this.preferredCursorX = null;
     for (const change of batch.changes) {
-      this.document.setCell(change.x, change.y, change.after);
+      this.document.setCell(change.x, change.y, change.after, change.afterStyle);
     }
     this.cursor = { ...batch.after.cursor };
     this.selection = cloneSelection(batch.after.selection);
     this.selectionReflow = batch.after.selectionReflow;
+    this.typingStyle = batch.after.typingStyle;
     this.undoStack.push(batch);
     this.searchResults = [];
     this.searchIndex = -1;
@@ -1451,6 +1595,7 @@ export class EditorModel {
     this.cursor = { ...cursor };
     this.selection = null;
     this.selectionReflow = null;
+    this.typingStyle = DEFAULT_TEXT_STYLE;
     this.undoStack = [];
     this.redoStack = [];
     this.searchResults = [];
@@ -1468,6 +1613,7 @@ export class EditorModel {
     this.cursor = { ...cursor };
     this.selection = null;
     this.selectionReflow = null;
+    this.typingStyle = DEFAULT_TEXT_STYLE;
     this.undoStack = [];
     this.redoStack = [];
     this.searchResults = [];
