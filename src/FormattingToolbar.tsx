@@ -1,5 +1,5 @@
 import { useState, type PointerEvent } from "react";
-import { BASE_FONT_SIZE, FONT_SIZES, MAX_FONT_SIZE, MIN_FONT_SIZE, type FormattingState, type StyleToggle, type TextStyle } from "@/lib/formatting";
+import { BASE_FONT_SIZE, FONT_SIZES, MIN_FONT_SIZE, nextFontSize, type FormattingState, type StyleToggle, type TextStyle } from "@/lib/formatting";
 
 const TOGGLES: Array<{ key: StyleToggle; label: string; symbol: string; shortcut?: string }> = [
   { key: "bold", label: "굵게", symbol: "B", shortcut: "Ctrl/Cmd+B" },
@@ -25,7 +25,7 @@ export function FormattingToolbar({ state, disabled, onToggle, onStyle, beforeCo
   const applySize = () => {
     if (draft === null) return;
     const size = Number(draft);
-    if (!draft.trim() || !Number.isInteger(size) || size < MIN_FONT_SIZE || size > MAX_FONT_SIZE) {
+    if (!draft.trim() || !Number.isSafeInteger(size) || size < MIN_FONT_SIZE) {
       setInvalid(true);
       return;
     }
@@ -36,8 +36,7 @@ export function FormattingToolbar({ state, disabled, onToggle, onStyle, beforeCo
   };
   const stepSize = (direction: 1 | -1) => {
     const current = state.fontSize ?? BASE_FONT_SIZE;
-    const next = direction > 0 ? FONT_SIZES.find((size) => size > current) ?? MAX_FONT_SIZE
-      : [...FONT_SIZES].reverse().find((size) => size < current) ?? MIN_FONT_SIZE;
+    const next = nextFontSize(current, direction);
     beforeCommand();
     onStyle({ fontSize: next });
     setDraft(null);
@@ -67,7 +66,7 @@ export function FormattingToolbar({ state, disabled, onToggle, onStyle, beforeCo
         <input type="text" inputMode="numeric" list="font-size-options" aria-label="글자 크기"
           aria-invalid={invalid} aria-describedby={invalid ? "font-size-error" : undefined}
           disabled={disabled} className="font-size-input" value={draft ?? state.fontSize ?? ""}
-          placeholder="혼합" title={`글자 크기 (${MIN_FONT_SIZE}–${MAX_FONT_SIZE})`}
+          placeholder="혼합" title={`글자 크기 (기본 1, 자연수 배율)`}
           onPointerDown={beforeCommand}
           onChange={(event) => { setDraft(event.target.value); setInvalid(false); }}
           onBlur={applySize}
@@ -75,17 +74,17 @@ export function FormattingToolbar({ state, disabled, onToggle, onStyle, beforeCo
             if (event.key === "Enter") {
               event.preventDefault(); applySize();
               const size = Number(draft ?? state.fontSize);
-              if (Number.isInteger(size) && size >= MIN_FONT_SIZE && size <= MAX_FONT_SIZE) focusEditor();
+              if (Number.isSafeInteger(size) && size >= MIN_FONT_SIZE) focusEditor();
             } else if (event.key === "Escape") {
               event.preventDefault(); event.stopPropagation(); setDraft(null); setInvalid(false); focusEditor();
             }
           }} />
         <datalist id="font-size-options">{FONT_SIZES.map((size) => <option value={size} key={size} />)}</datalist>
         <button className="icon-button size-step" type="button" aria-label="글자 크기 키우기" title="글자 크기 키우기"
-          disabled={disabled || state.fontSize === MAX_FONT_SIZE} onPointerDown={preserveInput} onClick={() => stepSize(1)}>
+          disabled={disabled} onPointerDown={preserveInput} onClick={() => stepSize(1)}>
           <span aria-hidden="true">A+</span>
         </button>
-        {invalid && <span id="font-size-error" className="font-size-error" role="alert">{MIN_FONT_SIZE}–{MAX_FONT_SIZE} 사이의 정수를 입력하세요.</span>}
+        {invalid && <span id="font-size-error" className="font-size-error" role="alert">1, 2, 3처럼 자연수를 입력하세요.</span>}
       </div>
     </div>
   );

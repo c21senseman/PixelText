@@ -1,6 +1,7 @@
+import { contentRows } from "./text-raster";
 import { SerializedChunk, SparseDocument } from "./document";
 import { hasControlCharacter, isValidCellValue } from "./graphemes";
-import { parseTextStyle, type TextStyle } from "./formatting";
+import { cellText, parseTextStyle, parseLegacyTextStyle, type TextStyle } from "./formatting";
 import {
   Bookmark,
   Camera,
@@ -14,14 +15,13 @@ import {
   MAX_ZOOM,
   MIN_ZOOM,
   assertSafePosition,
-  assertTextRasterSize,
 } from "./types";
 
 export const MAX_IMPORT_FILE_BYTES = 20 * 1024 * 1024;
 const MAX_IMPORT_CHUNKS = 50_000;
 
 export type PixelTextFile = {
-  version: 1 | 2;
+  version: 1 | 2 | 3;
   chunkSize: 64;
   chunks: SerializedChunk[];
   bookmarks: Bookmark[];
@@ -101,7 +101,7 @@ export function exportJson(
   camera: Camera,
 ): string {
   const file: PixelTextFile = {
-    version: 2,
+    version: 3,
     chunkSize: CHUNK_SIZE,
     chunks: document.sortedChunks(),
     bookmarks: bookmarks.map((bookmark) => ({ ...bookmark })),
@@ -131,7 +131,7 @@ export function importJson(raw: string): ImportedDocument {
   ) {
     throw new EditorError("필수 문서 필드가 없습니다.");
   }
-  if ((parsed.version !== 1 && parsed.version !== 2) || parsed.chunkSize !== CHUNK_SIZE) {
+  if (![1, 2, 3].includes(parsed.version as number) || parsed.chunkSize !== CHUNK_SIZE) {
     throw new EditorError("지원하지 않는 문서 버전 또는 청크 크기입니다.");
   }
   if (!Array.isArray(parsed.chunks)) {
@@ -190,7 +190,7 @@ export function importJson(raw: string): ImportedDocument {
           throw new EditorError("잘못되거나 중복된 글자 서식입니다.");
         }
         styledIndices.add(entry[0]);
-        styles.push([entry[0], parseTextStyle(entry[1])]);
+        styles.push([entry[0], parsed.version === 3 ? parseTextStyle(entry[1]) : parseLegacyTextStyle(entry[1])]);
       }
     }
     chunks.push({
@@ -224,7 +224,7 @@ export function importJson(raw: string): ImportedDocument {
     throw new EditorError("카메라 값이 허용 범위를 벗어났습니다.");
   }
 
-  const document = SparseDocument.fromChunks(chunks);
+  const document = SparseDocument.fromChunks(chunks, parsed.version !== 3);
   for (const bookmark of bookmarks) assertSafePosition(bookmark);
   return { document, bookmarks, camera: camera as Camera };
 }
@@ -232,16 +232,6 @@ export function importJson(raw: string): ImportedDocument {
 export function exportTxt(document: SparseDocument): string {
   const bounds = document.bounds();
   if (!bounds) return "";
-  const width = bounds.maxX - bounds.minX;
-  const height = bounds.maxY - bounds.minY;
-  assertTextRasterSize(width, height);
-  const lines: string[] = [];
-  for (let y = bounds.minY; y < bounds.maxY; y += 1) {
-    let line = "";
-    for (let x = bounds.minX; x < bounds.maxX; x += 1) {
-      line += document.getRasterCell(x, y) ?? " ";
-    }
-    lines.push(line);
-  }
-  return lines.join("\n");
+  return contentRows(document, { x1: bounds.minX, x2: bounds.maxX, y1: bounds.minY, y2: bounds.maxY })
+    .map((line) => line.map((cell) => cellText(cell ?? " ")).join("")).join("\n");
 }

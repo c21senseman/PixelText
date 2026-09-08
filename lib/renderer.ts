@@ -11,7 +11,7 @@ import {
 
 export const BASE_CELL_WIDTH = 12;
 export const BASE_CELL_HEIGHT = 24;
-import { BASE_FONT_SIZE, DEFAULT_TEXT_STYLE, type TextStyle } from "./formatting";
+import { BASE_FONT_SIZE, BASE_FONT_PIXELS, DEFAULT_TEXT_STYLE, type TextStyle } from "./formatting";
 import { getTextLayout, type LayoutGlyph } from "./layout";
 const CANVAS_FONT_FAMILY =
   '"SFMono-Regular", "Cascadia Code", Consolas, "D2Coding", "Nanum Gothic Coding", "Noto Sans Mono CJK KR", monospace';
@@ -159,7 +159,7 @@ function drawGlyph(
   const height = (glyph.rect.y2 - glyph.rect.y1) * metrics.height;
   const style = glyph.style;
   context.save();
-  context.font = `${style.italic ? "italic " : ""}${style.bold ? "700 " : "400 "}${Math.max(1, style.fontSize * camera.zoom)}px ${CANVAS_FONT_FAMILY}`;
+  context.font = `${style.italic ? "italic " : ""}${style.bold ? "700 " : "400 "}${Math.max(1, style.fontSize * BASE_FONT_PIXELS * camera.zoom)}px ${CANVAS_FONT_FAMILY}`;
   context.textAlign = "center";
   context.textBaseline = "alphabetic";
   context.fillStyle = color;
@@ -168,7 +168,7 @@ function drawGlyph(
   context.clip();
   context.fillText(glyph.text, screen.x + width / 2, screen.y + height * 0.8, width * 0.96);
   context.strokeStyle = color;
-  context.lineWidth = Math.max(0.7, style.fontSize * camera.zoom / 16);
+  context.lineWidth = Math.max(0.7, style.fontSize * BASE_FONT_PIXELS * camera.zoom / 16);
   for (const fraction of [style.underline ? 0.91 : null, style.strikethrough ? 0.52 : null]) {
     if (fraction === null) continue;
     context.beginPath();
@@ -265,7 +265,7 @@ export function drawEditorCanvas(canvas: HTMLCanvasElement, options: DrawEditorO
 
   if (options.searchLength > 0) {
     options.searchResults.forEach((result, index) => {
-      const bounds = layout.selectionBounds({ x1: result.x, y1: result.y, x2: result.x + options.searchLength, y2: result.y + 1 });
+      const bounds = layout.searchRect(result, options.searchLength);
       drawSelection(context, bounds, options.camera, viewport, visible, "transparent",
         index === options.activeSearchIndex ? "#e89a3c" : "rgba(232,154,60,0.5)");
     });

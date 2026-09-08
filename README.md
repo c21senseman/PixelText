@@ -25,7 +25,7 @@ PixelText is a Canvas-based editor for writing and organizing text anywhere in a
 - Boundary-free text canvas backed by sparse 64×64 chunks
 - Text model that distinguishes unstored empty cells from one-cell gaps between characters
 - Insert and overwrite modes, line splitting with Enter, and pulling with Backspace/Delete
-- Bold, italic, underline, strikethrough, and 8–96px font sizes with selection and cursor synchronization
+- Bold, italic, underline, strikethrough, and natural-number font sizes (base size 1; no preset upper limit) with selection and cursor synchronization
 - Mixed-size text layout, visual vertical navigation, and formatting-preserving copy and paste within PixelText
 - Rectangular selections, four-edge resizing, and automatic text reflow
 - Copy and paste, plus horizontal or vertical push and overwrite movement
@@ -50,7 +50,7 @@ PixelText is a Canvas-based editor for writing and organizing text anywhere in a
 
 Open the in-app help panel for the complete controls, including minimap and selection movement.
 
-Formatting applies to selected text or subsequent typing. Mixed font sizes show an empty size field with a mixed placeholder. Autosave and JSON preserve formatting; older documents remain readable. TXT and external plain-text paste use unformatted text.
+Formatting applies to selected text or subsequent typing. Font sizes are whole-number multipliers: size 2 uses twice the width and height of size 1. The 12×24px base grid stays fixed during editing, selection, and dragging. Mixed font sizes show an empty size field with a mixed placeholder. Autosave and JSON preserve formatting; older documents remain readable, with pixel sizes rounded to the nearest natural-number multiplier (minimum 1). TXT and external plain-text paste use unformatted text.
 
 ## Data and privacy
 

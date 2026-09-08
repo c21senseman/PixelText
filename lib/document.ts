@@ -9,7 +9,10 @@ import {
   selectionRowRange,
 } from "./types";
 import { assertValidCellValue, graphemeWidth } from "./graphemes";
-import { DEFAULT_TEXT_STYLE, parseTextStyle, sameStyle, type TextStyle, type StyledCell } from "./formatting";
+import { DEFAULT_TEXT_STYLE, parseTextStyle, parseLegacyTextStyle, sameStyle, textWidthInCells, textHeightInCells, BASE_FONT_SIZE, type TextStyle, type StyledCell } from "./formatting";
+import { placeResizedText } from "./grid-placement";
+
+import { GlyphCoverage, contains, type Footprint } from "./coverage";
 
 export type ChunkKey = `${number},${number}`;
 export type Chunk = Map<number, string>;
@@ -59,9 +62,12 @@ export class SparseDocument {
   private readonly dirtyRevisions = new Map<ChunkKey, number>();
   private revision = 0;
   private storedCellCountValue = 0;
-  private interCharacterSpaceCountValue = 0;
+  private countRevision = -1;
+  private countValue = 0;
+  private readonly coverage = new GlyphCoverage();
 
   get contentRevision(): number { return this.revision; }
+  get hasScaledText(): boolean { return this.coverage.size > 0; }
 
   rowKeys(): IterableIterator<number> { return this.rowIndex.keys(); }
   rowRevision(y: number): number { return this.rowIndex.get(y)?.revision ?? 0; }
@@ -109,6 +115,8 @@ export class SparseDocument {
 
   setStyle(x: number, y: number, style: TextStyle): void {
     const next = parseTextStyle(style);
+    const text = this.getCell(x, y);
+    if (text) assertSafePosition({ x: x + (textWidthInCells(text, next) - 1), y: y + (textHeightInCells(next) - 1) });
     if (this.getCell(x, y) === null || sameStyle(this.getStyle(x, y), next)) return;
     const { key, index } = chunkAddress({ x, y });
     if (sameStyle(next, DEFAULT_TEXT_STYLE)) {
@@ -119,12 +127,41 @@ export class SparseDocument {
       chunk.set(index, next);
       this.styles.set(key, chunk);
     }
+    this.updateCoverage(x, y);
     this.markDirty(key);
     this.touchRow(y, key);
   }
 
   get cellCount(): number {
-    return this.storedCellCountValue + this.interCharacterSpaceCountValue;
+    if (this.countRevision !== this.revision) {
+      this.countValue = this.storedCellCountValue;
+      for (const [p, text] of this.entries()) {
+        const end = p.x + textWidthInCells(text, this.getStyle(p.x, p.y));
+        if (Number.isSafeInteger(end + 1) && this.getCell(end, p.y) === null && this.getCell(end + 1, p.y) !== null) this.countValue++;
+      }
+      this.countRevision = this.revision;
+    }
+    return this.countValue;
+  }
+
+  footprint(x: number, y: number): Footprint {
+    const style = this.getStyle(x, y);
+    return { x, y, width: textWidthInCells(this.getCell(x, y) ?? " ", style), height: textHeightInCells(style) };
+  }
+
+  private updateCoverage(x: number, y: number): void {
+    const text = this.getCell(x, y);
+    const style = this.getStyle(x, y);
+    this.coverage.set(`${x},${y}`, text && style.fontSize > BASE_FONT_SIZE ? this.footprint(x, y) : null);
+  }
+
+  anchorAt(x: number, y: number, include: (position: Position) => boolean = () => true): Position | null {
+    if (this.getCell(x, y) !== null && include({ x, y })) return { x, y };
+    if (x > Number.MIN_SAFE_INTEGER) {
+      const left = this.getCell(x - 1, y);
+      if (left && graphemeWidth(left) === 2 && include({ x: x - 1, y })) return { x: x - 1, y };
+    }
+    return this.coverage.at(x, y, include);
   }
 
   get storedCellCount(): number {
@@ -140,21 +177,14 @@ export class SparseDocument {
     return this.chunks.get(key)?.get(index) ?? null;
   }
 
-  // Only anchors are stored; the empty string represents the second occupied column.
+  // Every glyph has one anchor; covered base cells are never stored as text.
   getRasterCell(x: number, y: number): string | null {
-    const value = this.getCell(x, y);
-    if (value !== null) return value;
-    if (x > Number.MIN_SAFE_INTEGER) {
-      const left = this.getCell(x - 1, y);
-      if (left !== null && graphemeWidth(left) === 2) return "";
-    }
-    return null;
+    const anchor = this.anchorAt(x, y);
+    return anchor ? (anchor.x === x && anchor.y === y ? this.getCell(x, y) : "") : null;
   }
 
   snapPosition(position: Position): Position {
-    return this.getRasterCell(position.x, position.y) === ""
-      ? { x: position.x - 1, y: position.y }
-      : { ...position };
+    return this.anchorAt(position.x, position.y) ?? { ...position };
   }
 
   isInterCharacterSpace(x: number, y: number): boolean {
@@ -163,7 +193,7 @@ export class SparseDocument {
       this.getRasterCell(x, y) === null &&
       x > Number.MIN_SAFE_INTEGER &&
       x < Number.MAX_SAFE_INTEGER &&
-      this.getRasterCell(x - 1, y) !== null &&
+      this.anchorAt(x - 1, y)?.y === y &&
       this.getCell(x + 1, y) !== null
     );
   }
@@ -172,28 +202,12 @@ export class SparseDocument {
     return this.getCell(x, y) ?? (this.isInterCharacterSpace(x, y) ? " " : null);
   }
 
-  private spaceCandidates(x: number): number[] {
-    const candidates = [x];
-    if (x < Number.MAX_SAFE_INTEGER - 1) candidates.push(x + 2);
-    if (x > Number.MIN_SAFE_INTEGER) candidates.push(x - 1);
-    if (x < Number.MAX_SAFE_INTEGER) candidates.push(x + 1);
-    return candidates;
-  }
-
-  private countInterCharacterSpaces(xs: Iterable<number>, y: number): number {
-    let count = 0;
-    for (const x of xs) {
-      if (this.isInterCharacterSpace(x, y)) count += 1;
-    }
-    return count;
-  }
-
   setCell(x: number, y: number, value: string | null, style = DEFAULT_TEXT_STYLE): void {
     assertSafePosition({ x, y });
     style = parseTextStyle(style);
     if (value !== null) {
       assertValidCellValue(value);
-      assertSafePosition({ x: x + (graphemeWidth(value) - 1), y });
+      assertSafePosition({ x: x + (textWidthInCells(value, style) - 1), y: y + (textHeightInCells(style) - 1) });
     }
     const nextValue = value === " " ? null : value;
 
@@ -204,8 +218,6 @@ export class SparseDocument {
       if (nextValue !== null) this.setStyle(x, y, style);
       return;
     }
-    const spaceCandidates = this.spaceCandidates(x);
-    const spacesBefore = this.countInterCharacterSpaces(spaceCandidates, y);
 
     if (nextValue === null) {
       if (!chunk) return;
@@ -222,8 +234,7 @@ export class SparseDocument {
       this.setStyle(x, y, style);
     }
 
-    const spacesAfter = this.countInterCharacterSpaces(spaceCandidates, y);
-    this.interCharacterSpaceCountValue += spacesAfter - spacesBefore;
+    this.updateCoverage(x, y);
 
     this.markDirty(key);
     this.touchRow(y, key, nextValue !== null);
@@ -311,27 +322,35 @@ export class SparseDocument {
     const minCy = Math.floor(minY / CHUNK_SIZE);
     const maxCy = Math.floor((maxY - 1) / CHUNK_SIZE);
 
-    for (let cy = minCy; cy <= maxCy; cy += 1) {
-      for (let cx = minCx; cx <= maxCx; cx += 1) {
-        const chunk = this.chunks.get(`${cx},${cy}`);
-        if (!chunk) continue;
-        for (const [index, value] of chunk) {
-          const x = cx * CHUNK_SIZE + (index % CHUNK_SIZE);
-          const y = cy * CHUNK_SIZE + Math.floor(index / CHUNK_SIZE);
-          if (x + graphemeWidth(value) > minX && x < maxX && y >= minY && y < maxY) {
-            if (!fullyContained || (x >= minX && x + graphemeWidth(value) <= maxX)) {
-              callback(x, y, value);
-            }
-          }
-        }
+    const visitChunk = (cx: number, cy: number) => {
+      const chunk = this.chunks.get(`${cx},${cy}`);
+      if (!chunk) return;
+      for (const [index, value] of chunk) {
+        const x = cx * CHUNK_SIZE + (index % CHUNK_SIZE);
+        const y = cy * CHUNK_SIZE + Math.floor(index / CHUNK_SIZE);
+        if (this.getStyle(x, y).fontSize > BASE_FONT_SIZE) continue;
+        if (x + graphemeWidth(value) > minX && x < maxX && y >= minY && y < maxY &&
+          (!fullyContained || (x >= minX && x + graphemeWidth(value) <= maxX))) callback(x, y, value);
+      }
+    };
+    if ((maxCx - minCx + 1) * (maxCy - minCy + 1) < this.chunks.size) {
+      for (let cy = minCy; cy <= maxCy; cy++) for (let cx = minCx; cx <= maxCx; cx++) visitChunk(cx, cy);
+    } else {
+      for (const key of this.chunks.keys()) {
+        const { x, y } = parseChunkKey(key);
+        if (x >= minCx && x <= maxCx && y >= minCy && y <= maxCy) visitChunk(x, y);
       }
     }
+    const selection = { x1: minX, y1: minY, x2: maxX, y2: maxY };
+    this.coverage.forEachInRect(selection, (rect) => {
+      if (!fullyContained || contains(rect, selection)) callback(rect.x, rect.y, this.getCell(rect.x, rect.y)!);
+    });
   }
 
   forEachInSelection(selection: Selection, callback: (x: number, y: number, value: string) => void, fullyContained = false): void {
     this.forEachInRect(selection.x1, selection.y1, selection.x2, selection.y2, (x, y, value) => {
       const range = selectionRowRange(selection, y);
-      const end = x + graphemeWidth(value);
+      const end = x + this.footprint(x, y).width;
       if (end > range.x1 && x < range.x2 && (!fullyContained || (x >= range.x1 && end <= range.x2))) callback(x, y, value);
     }, fullyContained);
   }
@@ -345,8 +364,8 @@ export class SparseDocument {
     for (const [position, value] of this.entries()) {
       minX = Math.min(minX, position.x);
       minY = Math.min(minY, position.y);
-      maxX = Math.max(maxX, position.x + graphemeWidth(value));
-      maxY = Math.max(maxY, position.y + 1);
+      maxX = Math.max(maxX, position.x + textWidthInCells(value, this.getStyle(position.x, position.y)));
+      maxY = Math.max(maxY, position.y + textHeightInCells(this.getStyle(position.x, position.y)));
     }
     return { minX, minY, maxX, maxY };
   }
@@ -380,7 +399,7 @@ export class SparseDocument {
       }
     }
     const seenIndices = new Set<number>();
-    const spaceCandidatesByRow = new Map<number, Set<number>>();
+    const loadedRows = new Set<number>();
     for (const [index, value] of serialized.cells) {
       if (
         !Number.isInteger(index) ||
@@ -400,34 +419,28 @@ export class SparseDocument {
       assertSafePosition({ x: x + (graphemeWidth(value) - 1), y });
       if (value === " ") continue;
       chunk.set(index, value);
-      const candidates = spaceCandidatesByRow.get(y) ?? new Set<number>();
-      for (const candidate of this.spaceCandidates(x)) candidates.add(candidate);
-      spaceCandidatesByRow.set(y, candidates);
+      loadedRows.add(y);
+      const style = styles.get(index) ?? DEFAULT_TEXT_STYLE;
+      assertSafePosition({ x: x + (textWidthInCells(value, style) - 1), y: y + (textHeightInCells(style) - 1) });
     }
     for (const index of styles.keys()) {
       if (!chunk.has(index)) throw new EditorError("서식에 해당하는 문자가 없습니다.");
     }
     if (styles.size > 0) this.styles.set(key, styles);
     if (chunk.size > 0) {
-      let spacesBefore = 0;
-      for (const [y, candidates] of spaceCandidatesByRow) {
-        spacesBefore += this.countInterCharacterSpaces(candidates, y);
-      }
       this.chunks.set(key, chunk);
       this.storedCellCountValue += chunk.size;
-      let spacesAfter = 0;
-      for (const [y, candidates] of spaceCandidatesByRow) {
-        spacesAfter += this.countInterCharacterSpaces(candidates, y);
-      }
-      this.interCharacterSpaceCountValue += spacesAfter - spacesBefore;
       this.revision += 1;
-      for (const y of spaceCandidatesByRow.keys()) this.touchRow(y, key);
+      for (const y of loadedRows) this.touchRow(y, key);
+      for (const [index] of styles) {
+        this.updateCoverage(serialized.x * CHUNK_SIZE + index % CHUNK_SIZE, serialized.y * CHUNK_SIZE + Math.floor(index / CHUNK_SIZE));
+      }
     }
   }
 
-  static fromChunks(chunks: SerializedChunk[]): SparseDocument {
+  static fromChunks(chunks: SerializedChunk[], legacyGrid = false, legacyFontSizes = false): SparseDocument {
     const document = new SparseDocument();
-    for (const chunk of chunks) document.loadChunk(chunk);
+    for (const chunk of chunks) document.loadChunk(legacyFontSizes ? { ...chunk, styles: chunk.styles?.map(([index, style]) => [index, parseLegacyTextStyle(style)]) } : chunk);
     // Older files placed all graphemes one column apart. Resolve overlapping
     // anchors from left to right, preserving the spacing of the shifted suffix.
     const entries = Array.from(document.entries()).sort((a, b) => a[0].y - b[0].y || a[0].x - b[0].x);
@@ -445,6 +458,13 @@ export class SparseDocument {
     }
     for (const move of moves) document.deleteCell(move.from.x, move.from.y);
     for (const move of moves) document.setCell(move.to.x, move.to.y, move.value, move.style);
+    if (legacyGrid && document.hasScaledText) {
+      const cells = [...document.entries()].map(([position, text]) => ({ position, value: { text, style: document.getStyle(position.x, position.y) } }));
+      const placed = placeResizedText(cells, (cell) => cell.value, true);
+      for (const cell of cells) document.deleteCell(cell.position.x, cell.position.y);
+      for (const cell of placed) document.setCell(cell.position.x, cell.position.y, cell.value.text, cell.value.style);
+    }
+    if (legacyFontSizes) document.markAllDirty(chunks.map((chunk) => `${chunk.x},${chunk.y}`));
     return document;
   }
 }

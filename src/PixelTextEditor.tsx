@@ -90,7 +90,6 @@ type DragState =
       edge: SelectionResizeEdge;
       original: Selection;
       boundary: number;
-      worldBoundary?: number;
     };
 
 const DEFAULT_CAMERA: Camera = { x: 0, y: 0, zoom: 1 };
@@ -408,6 +407,7 @@ export default function PixelTextEditor() {
         savedMetadataRevisionRef.current = metadataRevisionRef.current;
         setReady(true);
         setSaveState((current) => (current === "error" ? current : "saved"));
+        if (editor.document.isDirty) scheduleSave();
         requestRender();
         focusInput();
       });
@@ -967,35 +967,20 @@ export default function PixelTextEditor() {
     const metrics = cellMetrics(current);
     if (drag.kind === "resize") {
       const horizontal = isHorizontalResizeEdge(drag.edge);
-      const layout = getTextLayout(editor.document);
-      const world = {
-        x: current.x + (clientX - rect.left - rect.width / 2) / metrics.width,
-        y: horizontal ? layout.toWorld({ x: 0, y: drag.original.y1 }).y
-          : current.y + (clientY - rect.top - rect.height / 2) / metrics.height,
-      };
-      const logical = layout.toLogical(world);
-      const boundary = Math.round(horizontal ? logical.x : logical.y);
+      const boundary = Math.round(horizontal
+        ? current.x + (clientX - rect.left - rect.width / 2) / metrics.width
+        : current.y + (clientY - rect.top - rect.height / 2) / metrics.height);
       if (!Number.isSafeInteger(boundary)) return;
       if (drag.edge === "left") drag.boundary = Math.min(boundary, drag.original.x2 - 1);
       else if (drag.edge === "right") drag.boundary = Math.max(boundary, drag.original.x1 + 1);
       else if (drag.edge === "top") drag.boundary = Math.min(boundary, drag.original.y2 - 1);
       else drag.boundary = Math.max(boundary, drag.original.y1 + 1);
-      const originalBounds = layout.selectionBounds(drag.original);
-      if (horizontal) {
-        drag.worldBoundary = layout.toWorld({ x: drag.boundary, y: drag.original.y1 }).x;
-        setSelectionResizePreview(layout.selectionForColumns(
-          drag.edge === "left" ? drag.worldBoundary : originalBounds.x1,
-          drag.edge === "right" ? drag.worldBoundary : originalBounds.x2,
-          drag.original.y1, drag.original.y2,
-        ));
-        return;
-      }
       const preview = { ...drag.original };
       if (drag.edge === "left") preview.x1 = drag.boundary;
       else if (drag.edge === "right") preview.x2 = drag.boundary;
       else if (drag.edge === "top") preview.y1 = drag.boundary;
       else preview.y2 = drag.boundary;
-      setSelectionResizePreview(drag.original.rows ? layout.selectionForColumns(originalBounds.x1, originalBounds.x2, preview.y1, preview.y2) : preview);
+      setSelectionResizePreview(preview);
       return;
     }
     const cell = screenToCell(clientX - rect.left, clientY - rect.top, current, rect, editor.document);
@@ -1033,7 +1018,7 @@ export default function PixelTextEditor() {
     ) {
       runAction(() => {
         if (isHorizontalResizeEdge(drag.edge)) {
-          editor.resizeSelectionHorizontal(drag.edge, drag.boundary, drag.worldBoundary);
+          editor.resizeSelectionHorizontal(drag.edge, drag.boundary);
         } else {
           editor.resizeSelectionVertical(drag.edge, drag.boundary);
         }

@@ -9,6 +9,7 @@ type StoredChunk = SerializedChunk & { key: string };
 
 type StoredMeta = {
   id: "current";
+  gridVersion?: 3;
   camera: Camera;
   bookmarks: Bookmark[];
 };
@@ -76,6 +77,7 @@ export class IndexedDocumentStorage {
     if (!meta && storedChunks.length === 0) return null;
     const document = SparseDocument.fromChunks(
       storedChunks.map(({ x, y, cells, styles }) => ({ x, y, cells, styles })),
+      meta?.gridVersion !== 3, meta?.gridVersion !== 3,
     );
     const camera = isStoredCamera(meta?.camera)
       ? meta.camera
@@ -102,6 +104,7 @@ export class IndexedDocumentStorage {
       chunks,
       meta: {
         id: "current",
+        gridVersion: 3,
         camera: { ...camera },
         bookmarks: bookmarks.map((bookmark) => ({ ...bookmark })),
       },

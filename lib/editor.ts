@@ -1,6 +1,10 @@
+import { contentRows, placedContentRows } from "./text-raster";
 import { SparseDocument } from "./document";
 import { getTextLayout } from "./layout";
-import { BASE_FONT_SIZE, DEFAULT_TEXT_STYLE, cellStyle, cellText, parseTextStyle, sameStyle, type CellContent, type FormattingState, type StyleToggle, type TextStyle } from "./formatting";
+import { DEFAULT_TEXT_STYLE, cellStyle, cellText, contentWidth, textWidthInCells, textHeightInCells, parseTextStyle, sameStyle, type CellContent, type FormattingState, type StyleToggle, type TextStyle } from "./formatting";
+import { GlyphCoverage, contains, intersects } from "./coverage";
+import { placeResizedText, type PlacedCell } from "./grid-placement";
+import { footprint, cellRect, moveCell, connectedCells, pushOutside, textRun } from "./spatial";
 import {
   assertValidCellValue,
   graphemeWidth,
@@ -91,8 +95,41 @@ function cardinalStepBetween(from: Position, to: Position): Position {
 
 class Transaction {
   private readonly changes = new Map<string, Change>();
+  private readonly coverage = new GlyphCoverage();
 
   constructor(private readonly document: SparseDocument) {}
+
+  entries(): PlacedCell[] {
+    const cells: PlacedCell[] = [];
+    for (const [position, text] of this.document.entries()) {
+      if (!this.changes.has(coordinateKey(position.x, position.y))) cells.push({ position, value: { text, style: this.document.getStyle(position.x, position.y) } });
+    }
+    for (const change of this.changes.values()) {
+      if (change.after) cells.push({ position: { x: change.x, y: change.y }, value: { text: change.after, style: change.afterStyle } });
+    }
+    return cells;
+  }
+
+  anchorAt(x: number, y: number): Position | null {
+    const pending = this.coverage.at(x, y, (p) => p.y === y);
+    if (pending) return pending;
+    return this.document.anchorAt(x, y, (p) => p.y === y && !this.changes.has(coordinateKey(p.x, p.y)));
+  }
+
+  rowHeight(y: number): number {
+    let height = 1;
+    for (const cell of this.entries()) if (cell.position.y === y) height = Math.max(height, textHeightInCells(cell.value.style));
+    return height;
+  }
+
+  replace(cells: PlacedCell[]): void {
+    for (const cell of this.entries()) this.set(cell.position.x, cell.position.y, null);
+    for (const cell of cells) this.set(cell.position.x, cell.position.y, cell.value);
+  }
+
+  get scaled(): boolean {
+    return this.document.hasScaledText || [...this.changes.values()].some((change) => !!change.after && change.afterStyle.fontSize > 1);
+  }
 
   read(x: number, y: number): CellContent | null {
     const text = this.get(x, y);
@@ -111,6 +148,7 @@ class Transaction {
       const left = leftChange ? leftChange.after : this.document.getCell(x - 1, y);
       if (left && graphemeWidth(left) === 2) return "";
     }
+    if (this.anchorAt(x, y)) return "";
     return null;
   }
 
@@ -120,6 +158,7 @@ class Transaction {
     const nextValue = after === " " ? null : after;
     const afterStyle = nextValue && content ? cellStyle(content) : DEFAULT_TEXT_STYLE;
     const key = coordinateKey(x, y);
+    this.coverage.set(key, nextValue ? { x, y, width: textWidthInCells(nextValue, afterStyle), height: textHeightInCells(afterStyle) } : null);
     const existing = this.changes.get(key);
     if (existing) {
       existing.after = nextValue;
@@ -259,6 +298,23 @@ export class EditorModel {
     const before = snapshotState(this.cursor, this.selection, this.selectionReflow, this.typingStyle);
     const transaction = new Transaction(this.document);
     const s = this.selection;
+    if (patch.fontSize !== undefined && patch.fontSize !== this.formatting.fontSize) {
+      const selected = new Set<string>();
+      this.document.forEachInSelection(s, (x, y) => selected.add(coordinateKey(x, y)), true);
+      const placed = placeResizedText(transaction.entries(), (cell) => selected.has(coordinateKey(cell.position.x, cell.position.y))
+        ? { text: cell.value.text, style: parseTextStyle({ ...cell.value.style, ...patch }) } : cell.value);
+      let selection: Selection | null = null;
+      for (const cell of placed) transaction.set(cell.from.x, cell.from.y, null);
+      for (const cell of placed) {
+        transaction.set(cell.position.x, cell.position.y, cell.value);
+        if (selected.has(coordinateKey(cell.from.x, cell.from.y))) {
+          const rect = { x1: cell.position.x, y1: cell.position.y, x2: cell.position.x + contentWidth(cell.value), y2: cell.position.y + textHeightInCells(cell.value.style) };
+          selection = selection ? { x1: Math.min(selection.x1, rect.x1), y1: Math.min(selection.y1, rect.y1), x2: Math.max(selection.x2, rect.x2), y2: Math.max(selection.y2, rect.y2) } : rect;
+        }
+      }
+      this.commit(transaction, before, selection ? { x: selection.x1, y: selection.y1 } : this.cursor, selection ?? s, null, next);
+      return;
+    }
     this.document.forEachInSelection(s, (x, y, text) => {
       transaction.set(x, y, { text, style: parseTextStyle({ ...this.document.getStyle(x, y), ...patch }) });
     }, true);
@@ -282,19 +338,29 @@ export class EditorModel {
   }
 
   moveCursor(dx: number, dy: number): void {
-    if (dx === 0 && dy !== 0) {
-      const layout = getTextLayout(this.document);
-      const preferred = this.preferredCursorX ?? layout.toWorld(this.cursor).x;
-      const y = safeAdd(this.cursor.y, dy);
-      this.setCursor({ x: layout.nearestCursorX(preferred, y), y });
+    let x = safeAdd(this.cursor.x, dx);
+    let y = safeAdd(this.cursor.y, dy);
+    const current = this.document.anchorAt(this.cursor.x, this.cursor.y);
+    const left = this.cursor.x > Number.MIN_SAFE_INTEGER ? this.document.anchorAt(this.cursor.x - 1, this.cursor.y) : null;
+    if (dy !== 0) {
+      let height = current?.y === this.cursor.y ? this.document.footprint(current.x, current.y).height
+        : left?.y === this.cursor.y ? this.document.footprint(left.x, left.y).height : 1;
+      const runAt = (rowY: number, x: number) => textRun([...this.document.entriesInRow(rowY)].map(([position, text]) => ({ position, value: { text, style: this.document.getStyle(position.x, rowY) } })), { x, y: rowY });
+      if (this.document.hasScaledText) for (const cell of runAt(this.cursor.y, this.cursor.x)) height = Math.max(height, cell.value.style.fontSize);
+      if (dy > 0) y = safeAdd(this.cursor.y, Math.max(dy, height));
+      const preferred = this.preferredCursorX ?? this.cursor.x;
+      if (dy < 0 && this.document.hasScaledText) {
+        for (const rowY of [...this.document.rowKeys()].filter((rowY) => rowY < this.cursor.y).sort((a, b) => b - a)) {
+          const run = runAt(rowY, preferred);
+          if (run.some((cell) => rowY + cell.value.style.fontSize > y)) { y = rowY; break; }
+        }
+      }
+      x = getTextLayout(this.document).nearestCursorX(preferred, y);
+      this.setCursor({ x, y });
       this.preferredCursorX = preferred;
       return;
     }
-    let x = safeAdd(this.cursor.x, dx);
-    const y = safeAdd(this.cursor.y, dy);
-    if (dx > 0 && dy === 0 && this.document.getRasterCell(x, y) === "") {
-      x = safeAdd(x, 1);
-    }
+    if (dx > 0 && current) x = safeAdd(this.cursor.x, Math.max(dx, this.document.footprint(current.x, current.y).width));
     this.setCursor({ x, y });
   }
 
@@ -353,8 +419,13 @@ export class EditorModel {
     const range = selectionRowRange(selection, y);
     if (x < range.x1 || x >= range.x2) return null;
     const value = transaction.read(x, y);
-    if (value === "" && x === range.x1) return null;
-    if (value && graphemeWidth(cellText(value)) > range.x2 - x) return null;
+    if (value === "") {
+      const anchor = transaction.anchorAt(x, y);
+      if (!anchor) return null;
+      const source = transaction.read(anchor.x, anchor.y);
+      if (!source || anchor.x < range.x1 || anchor.x + contentWidth(source) > range.x2 || y + textHeightInCells(cellStyle(source)) > selection.y2) return null;
+    }
+    if (value && (contentWidth(value) > range.x2 - x || y + textHeightInCells(cellStyle(value)) > selection.y2)) return null;
     return value;
   }
 
@@ -373,6 +444,17 @@ export class EditorModel {
     transaction: Transaction,
     selection: Selection,
   ): Position {
+    if (transaction.scaled) {
+      const cells = transaction.entries();
+      const removed = new Set(cells.filter((cell) => contains(footprint(cell), selection)));
+      const moving = new Set<PlacedCell>();
+      for (const y of new Set(cells.filter((cell) => cell.position.y >= selection.y1 && cell.position.y < selection.y2).map((cell) => cell.position.y))) {
+        if (cells.some((cell) => cell.position.y === y && intersects(footprint(cell), selection) && !removed.has(cell))) continue;
+        for (const cell of textRun(cells, { x: selection.x2, y })) if (cell.position.x >= selection.x2) moving.add(cell);
+      }
+      this.replaceWithoutCollisions(transaction, cells.filter((cell) => !removed.has(cell)), new Map([...moving].map((cell) => [cell, moveCell(cell, selection.x1 - selection.x2, 0)])), "다른 문자 블록과 충돌하여 선택 영역을 당길 수 없습니다.");
+      return { x: selection.x1, y: selection.y1 };
+    }
     const moving: Array<{
       fromX: number;
       toX: number;
@@ -423,7 +505,7 @@ export class EditorModel {
     for (const change of changes) {
       if (change.after !== null) {
         assertValidCellValue(change.after);
-        assertSafePosition({ x: change.x + (graphemeWidth(change.after) - 1), y: change.y });
+        assertSafePosition({ x: change.x + (textWidthInCells(change.after, change.afterStyle) - 1), y: change.y + (textHeightInCells(change.afterStyle) - 1) });
       }
     }
     for (const change of changes) {
@@ -461,8 +543,25 @@ export class EditorModel {
     grapheme: string,
     style = this.typingStyle,
   ): Position {
-    const width = graphemeWidth(grapheme);
+    const width = textWidthInCells(grapheme, style);
     const nextCursor = { x: safeAdd(position.x, width), y: position.y };
+    if (transaction.scaled || style.fontSize > 1) {
+      const cells = transaction.entries();
+      const added: PlacedCell = { position, value: { text: grapheme, style } };
+      const row = cells.filter((cell) => cell.position.y === position.y);
+      const moving = new Set<PlacedCell>();
+      for (const cell of row) {
+        if (intersects(footprint(cell), cellRect(added))) {
+          for (const item of textRun(row, cell.position)) if (item.position.x >= position.x) moving.add(item);
+        }
+      }
+      const shifted = [...moving].map((cell) => moveCell(cell, width, 0));
+      const fixed = row.filter((cell) => !moving.has(cell));
+      const placed = [...pushOutside(fixed, [...shifted, added].map(cellRect), { x: 1, y: 0 }), ...shifted, added];
+      const outside = pushOutside(cells.filter((cell) => cell.position.y !== position.y), placed.map(cellRect), { x: 0, y: 1 });
+      transaction.replace([...outside, ...placed]);
+      return nextCursor;
+    }
     // Include any run touched by the new glyph, including its second column.
     let end = position.x;
     for (let offset = 0; offset < width; offset += 1) {
@@ -475,7 +574,6 @@ export class EditorModel {
     for (const [x] of moving) transaction.set(x, position.y, null);
     for (const [x, value] of moving) transaction.set(safeAdd(x, width), position.y, value);
     transaction.set(position.x, position.y, { text: grapheme, style });
-    if (width === 2) transaction.set(position.x + 1, position.y, "");
     return nextCursor;
   }
 
@@ -497,14 +595,18 @@ export class EditorModel {
     grapheme: string,
     style = this.typingStyle,
   ): Position {
-    const width = graphemeWidth(grapheme);
+    const width = textWidthInCells(grapheme, style);
     const nextCursor = { x: safeAdd(position.x, width), y: position.y };
+    if (transaction.scaled || style.fontSize > 1) {
+      const added: PlacedCell = { position, value: { text: grapheme, style } };
+      transaction.replace([...transaction.entries().filter((cell) => !intersects(footprint(cell), cellRect(added))), added]);
+      return nextCursor;
+    }
     for (let x = position.x; x < nextCursor.x; x += 1) {
       if (transaction.get(x, position.y) === "") transaction.set(x - 1, position.y, null);
       transaction.set(x, position.y, null);
     }
     transaction.set(position.x, position.y, { text: grapheme, style });
-    if (width === 2) transaction.set(position.x + 1, position.y, "");
     return nextCursor;
   }
 
@@ -516,7 +618,7 @@ export class EditorModel {
     const width = segmentedLines.reduce(
       (maximum, line) => Math.max(maximum, line.reduce((sum, value) => {
         assertValidCellValue(value);
-        return sum + graphemeWidth(cellText(value));
+        return sum + contentWidth(value);
       }, 0)),
       0,
     );
@@ -537,16 +639,19 @@ export class EditorModel {
     const transaction = new Transaction(this.document);
     const selectionStart = this.clearSelectionInTransaction(transaction);
     const start = { ...(selectionStart ?? this.cursor) };
-    if (transaction.get(start.x, start.y) === "") start.x = safeAdd(start.x, 1);
+    const coveredStart = transaction.anchorAt(start.x, start.y);
+    if (coveredStart && coveredStart.x < start.x) start.x = safeAdd(coveredStart.x, contentWidth(transaction.read(coveredStart.x, coveredStart.y)!));
     let finalCursor = { ...start };
     let textIndex = 0;
     let lastStyle: TextStyle = inputStyle;
 
+    let y = start.y;
     for (let row = 0; row < segmentedLines.length; row += 1) {
-      const y = safeAdd(start.y, row);
       let lineCursor: Position = { x: start.x, y };
+      let height = segmentedLines[row].length ? 1 : textHeightInCells(lastStyle);
       for (const grapheme of segmentedLines[row]) {
         lastStyle = styles?.get(textIndex) ?? (styles ? DEFAULT_TEXT_STYLE : inputStyle);
+        height = Math.max(height, textHeightInCells(lastStyle));
         textIndex += 1;
         if (this.overwriteMode) {
           lineCursor = this.overwriteOne(transaction, lineCursor, grapheme, lastStyle);
@@ -557,6 +662,7 @@ export class EditorModel {
         }
       }
       finalCursor = lineCursor;
+      if (row < segmentedLines.length - 1) y = safeAdd(y, height);
     }
 
     this.commit(transaction, before, finalCursor, null, null, lastStyle);
@@ -568,6 +674,14 @@ export class EditorModel {
     y: number,
     width: number,
   ): void {
+    if (transaction.scaled) {
+      const cells = transaction.entries();
+      const run = new Set(textRun(cells, { x: startX, y }));
+      const kept = cells.filter((cell) => !run.has(cell) || cell.position.x < startX || cell.position.x >= startX + width);
+      const moved = new Map(kept.filter((cell) => run.has(cell) && cell.position.x >= startX + width).map((cell) => [cell, moveCell(cell, -width, 0)]));
+      this.replaceWithoutCollisions(transaction, kept, moved, "다른 문자 블록과 충돌하여 문자를 당길 수 없습니다.");
+      return;
+    }
     let lastX = startX;
     while (transaction.isTextCell(lastX, y)) {
       if (lastX === Number.MAX_SAFE_INTEGER) break;
@@ -590,6 +704,12 @@ export class EditorModel {
     startX: number,
     y: number,
   ): void {
+    if (transaction.scaled) {
+      const cells = transaction.entries();
+      const run = new Set(textRun(cells, { x: startX, y }));
+      this.replaceWithoutCollisions(transaction, cells, new Map(cells.filter((cell) => run.has(cell) && cell.position.x >= startX).map((cell) => [cell, moveCell(cell, -1, 0)])), "다른 문자 블록과 충돌하여 문자를 당길 수 없습니다.");
+      return;
+    }
     let endX = startX;
     while (transaction.isTextCell(endX, y)) {
       if (endX === Number.MAX_SAFE_INTEGER) break;
@@ -608,6 +728,33 @@ export class EditorModel {
     transaction: Transaction,
     position: Position,
   ): Position | null {
+    if (transaction.scaled) {
+      const cells = transaction.entries();
+      const current = textRun(cells, position);
+      if (current.length && current[0].position.x !== position.x) return null;
+      const above = cells.filter((cell) => cell.position.x === position.x && cell.position.y < position.y)
+        .sort((a, b) => b.position.y - a.position.y)[0];
+      if (!above) return null;
+      const previous = textRun(cells, above.position);
+      if (previous[0].position.x !== position.x) return null;
+      const previousHeight = Math.max(...previous.map((cell) => textHeightInCells(cell.value.style)));
+      if (above.position.y + previousHeight !== position.y) return null;
+      const end = previous.at(-1)!.position.x + contentWidth(previous.at(-1)!.value);
+      const nextCursor = { x: end, y: above.position.y };
+      assertSafePosition(nextCursor);
+      if (!current.length) return nextCursor;
+      const currentHeight = Math.max(...current.map((cell) => textHeightInCells(cell.value.style)));
+      const collapse = Math.min(previousHeight, currentHeight);
+      const block = connectedCells(cells, current);
+      const joined = new Set(current);
+      const moved = new Map<PlacedCell, PlacedCell>();
+      for (const cell of block) {
+        if (joined.has(cell)) moved.set(cell, moveCell(cell, end - position.x, above.position.y - position.y));
+        else if (cell.position.y > position.y) moved.set(cell, moveCell(cell, 0, -collapse));
+      }
+      this.replaceWithoutCollisions(transaction, cells, moved, "다른 문자 블록과 충돌하여 Backspace로 줄을 붙일 수 없습니다.");
+      return nextCursor;
+    }
     if (position.y === Number.MIN_SAFE_INTEGER) return null;
     if (
       position.x > Number.MIN_SAFE_INTEGER &&
@@ -756,8 +903,7 @@ export class EditorModel {
     }
 
     if (this.cursor.x === Number.MIN_SAFE_INTEGER) return;
-    const targetX = transaction.get(this.cursor.x - 1, this.cursor.y) === ""
-      ? this.cursor.x - 2 : this.cursor.x - 1;
+    const targetX = transaction.anchorAt(this.cursor.x - 1, this.cursor.y)?.x ?? this.cursor.x - 1;
     const deletedWidth = this.cursor.x - targetX;
     if (transaction.isTextCell(targetX, this.cursor.y)) {
       const joinsTwoSpaces =
@@ -793,7 +939,7 @@ export class EditorModel {
     }
 
     if (!transaction.isTextCell(this.cursor.x, this.cursor.y)) return;
-    const deletedWidth = graphemeWidth(transaction.get(this.cursor.x, this.cursor.y) ?? " ");
+    const deletedWidth = contentWidth(transaction.read(this.cursor.x, this.cursor.y) ?? " ");
     const joinsTwoSpaces =
       transaction.get(this.cursor.x, this.cursor.y) !== null &&
       this.cursor.x > Number.MIN_SAFE_INTEGER &&
@@ -809,11 +955,21 @@ export class EditorModel {
     this.commit(transaction, before, this.cursor, null);
   }
 
+  private replaceWithoutCollisions(transaction: Transaction, cells: PlacedCell[], moved: Map<PlacedCell, PlacedCell>, message: string): void {
+    const placed = [...moved.values()];
+    const fixed = cells.filter((cell) => !moved.has(cell));
+    for (let i = 0; i < placed.length; i++) {
+      if (fixed.some((cell) => intersects(footprint(cell), cellRect(placed[i]))) || placed.slice(i + 1).some((cell) => intersects(footprint(cell), cellRect(placed[i])))) throw new EditorError(message);
+    }
+    transaction.replace([...fixed, ...placed]);
+  }
+
   private textLineStart(
     transaction: Transaction,
     referenceX: number,
     y: number,
   ): number {
+    if (transaction.scaled) return textRun(transaction.entries(), { x: referenceX, y })[0]?.position.x ?? referenceX;
     let lineStart = referenceX;
     while (
       lineStart > Number.MIN_SAFE_INTEGER &&
@@ -834,6 +990,28 @@ export class EditorModel {
     const transaction = new Transaction(this.document);
     const selectionStart = this.clearSelectionInTransaction(transaction);
     const cursor = { ...(selectionStart ?? this.cursor) };
+    if (transaction.scaled || this.typingStyle.fontSize > 1) {
+      const cells = transaction.entries();
+      const covered = transaction.anchorAt(cursor.x, cursor.y);
+      if (covered && covered.x < cursor.x) cursor.x = safeAdd(covered.x, contentWidth(transaction.read(covered.x, covered.y)!));
+      const run = textRun(cells, cursor);
+      const lineStart = run[0]?.position.x ?? cursor.x;
+      const prefix = run.filter((cell) => cell.position.x < cursor.x);
+      const suffix = new Set(run.filter((cell) => cell.position.x >= cursor.x));
+      const height = (items: PlacedCell[], fallback: number) => items.length ? Math.max(...items.map((cell) => textHeightInCells(cell.value.style))) : fallback;
+      const prefixHeight = height(prefix, textHeightInCells(this.typingStyle));
+      const suffixHeight = height([...suffix], textHeightInCells(this.typingStyle));
+      const delta = prefixHeight + suffixHeight - height(run, prefixHeight);
+      const nextY = safeAdd(cursor.y, prefixHeight);
+      const moved = new Map<PlacedCell, PlacedCell>();
+      for (const cell of connectedCells(cells, run)) {
+        if (suffix.has(cell)) moved.set(cell, moveCell(cell, lineStart - cursor.x, prefixHeight));
+        else if (cell.position.y > cursor.y) moved.set(cell, moveCell(cell, 0, delta));
+      }
+      this.replaceWithoutCollisions(transaction, cells, moved, "다른 문자 블록과 충돌하여 Enter를 적용할 수 없습니다.");
+      this.commit(transaction, before, { x: lineStart, y: nextY }, null);
+      return;
+    }
     if (transaction.get(cursor.x, cursor.y) === "") cursor.x = safeAdd(cursor.x, 1);
 
     let referenceX: number | null = null;
@@ -963,10 +1141,11 @@ export class EditorModel {
     let overlaps = false;
     this.document.forEachInSelection(
       target,
-      (x, y, value) => {
+      (x, y) => {
         const belongsToSelection =
           isPointInSelection({ x, y }, selection) &&
-          graphemeWidth(value) <= selectionRowRange(selection, y).x2 - x;
+          this.document.footprint(x, y).width <= selectionRowRange(selection, y).x2 - x &&
+          y + this.document.footprint(x, y).height <= selection.y2;
         if (!belongsToSelection) overlaps = true;
       },
     );
@@ -1152,6 +1331,17 @@ export class EditorModel {
       this.typingStyle,
     );
     const transaction = new Transaction(this.document);
+    if (transaction.scaled) {
+      const cells = transaction.entries();
+      const moving = cells.filter((cell) => contains(footprint(cell), selection));
+      const movingSet = new Set(moving);
+      let outside = cells.filter((cell) => !movingSet.has(cell));
+      const pushDirection = options.pushDirection ?? cardinalStepBetween(options.lastNonOverlappingOffset ?? { x: 0, y: 0 }, { x: dx, y: dy });
+      outside = this.overwriteMode ? outside.filter((cell) => !intersects(footprint(cell), target)) : pushOutside(outside, [target], pushDirection);
+      transaction.replace([...outside, ...moving.map((cell) => moveCell(cell, dx, dy))]);
+      this.commit(transaction, before, { x: target.x1, y: target.y1 }, target, translateSelectionReflow(this.selectionReflow, dx));
+      return;
+    }
     this.document.forEachInSelection(
       selection,
       (x, y) => transaction.set(x, y, null),
@@ -1191,24 +1381,39 @@ export class EditorModel {
     selection: Selection,
     sourceWidth: number,
   ): SelectionReflow {
+    if (transaction.scaled) {
+      return { lines: placedContentRows(transaction.entries(), selection).map((row) => {
+        const first = row.cells.findIndex((cell) => cell !== null);
+        if (first < 0) return { cells: [], lineStartX: selection.x1 };
+        const lineStartX = this.textLineStart(transaction, selection.x1 + first, row.y);
+        let end = row.cells.length;
+        while (end > first && row.cells[end - 1] === null) end--;
+        return { cells: row.cells.slice(Math.max(selection.x1, lineStartX) - selection.x1, end), lineStartX };
+      }) };
+    }
     const lines: Array<{
       cells: ReadonlyArray<CellContent | null>;
       lineStartX: number;
     }> = [];
+    let coveredUntil = selection.y1;
     for (let y = selection.y1; y < selection.y2; y += 1) {
       const row: Array<CellContent | null> = [];
       let lastOccupied = -1;
       let firstTextCellX: number | null = null;
+      let rowHeight = 1;
       for (let offset = 0; offset < sourceWidth; offset += 1) {
         const x = safeAdd(selection.x1, offset);
         const value = this.selectedRasterCell(transaction, selection, x, y);
         row.push(value);
+        if (value) rowHeight = Math.max(rowHeight, textHeightInCells(cellStyle(value)));
         if (value !== null) lastOccupied = offset;
         if (firstTextCellX === null && isPointInSelection({ x, y }, selection) && (value !== null || transaction.isInterCharacterSpace(x, y))) {
           firstTextCellX = x;
         }
       }
 
+      if (lastOccupied < 0 && y < coveredUntil) continue;
+      coveredUntil = Math.max(coveredUntil, y + rowHeight);
       if (firstTextCellX === null || lastOccupied < 0) {
         lines.push({ cells: [], lineStartX: selection.x1 });
       } else {
@@ -1230,7 +1435,6 @@ export class EditorModel {
   resizeSelectionHorizontal(
     edge: "left" | "right",
     boundaryX: number,
-    worldBoundary?: number,
   ): void {
     const selection = this.selection;
     if (!selection) return;
@@ -1245,27 +1449,17 @@ export class EditorModel {
     const sourceWidth = safeAdd(selection.x2, -selection.x1);
     const sourceHeight = safeAdd(selection.y2, -selection.y1);
     const targetWidth = safeAdd(targetX2, -targetX1);
+    if (this.document.hasScaledText || this.selectionReflow?.lines.some((line) => line.cells.some((cell) => cell && cellStyle(cell).fontSize > 1))) {
+      this.resizeScaledSelection(selection, targetX1, targetX2, edge);
+      return;
+    }
     assertTextRasterSize(sourceWidth, sourceHeight);
-    const layout = getTextLayout(this.document);
-    const sourceBounds = layout.selectionBounds(selection);
-    let visualReflow = !!selection.rows;
-    this.document.forEachInSelection(selection, (x, y) => {
-      if (this.document.getStyle(x, y).fontSize !== BASE_FONT_SIZE) visualReflow = true;
-    }, true);
-    const boundary = worldBoundary ?? layout.toWorld({ x: boundaryX, y: selection.y1 }).x;
-    const left = edge === "left" ? boundary : sourceBounds.x1;
-    const right = edge === "right" ? boundary : sourceBounds.x2;
-    const visualWidth = right - left;
-    if (!Number.isFinite(visualWidth) || visualWidth <= 0) throw new EditorError("선택 영역의 너비는 양수여야 합니다.");
-    const shrinking = visualReflow ? visualWidth < sourceBounds.x2 - sourceBounds.x1 - 1e-9 : targetWidth < sourceWidth;
-    const unchanged = visualReflow ? Math.abs(visualWidth - (sourceBounds.x2 - sourceBounds.x1)) < 1e-9 : targetWidth === sourceWidth;
-
-    if (unchanged) return;
+    const shrinking = targetWidth < sourceWidth;
+    if (targetWidth === sourceWidth) return;
 
     if (!shrinking && !this.selectionReflow) {
       assertTextRasterSize(targetWidth, sourceHeight);
-      this.selection = visualReflow ? layout.selectionForColumns(left, right, selection.y1, selection.y2)
-        : { ...selection, x1: targetX1, x2: targetX2 };
+      this.selection = { ...selection, x1: targetX1, x2: targetX2 };
       this.emit();
       return;
     }
@@ -1275,57 +1469,35 @@ export class EditorModel {
       this.selectionReflow ??
       this.captureSelectionReflow(transaction, selection, sourceWidth);
     const placed: Array<{ x: number; y: number; value: CellContent }> = [];
-    const rowLayouts: Array<{ startX: number; usedEndX: number; lineIndex: number; remaining: number }> = [];
+    const rowLayouts: Array<{ startX: number; usedEndX: number; lineIndex: number }> = [];
     let targetHeight = 0;
     for (const [lineIndex, line] of selectionReflow.lines.entries()) {
-      const widest = line.cells.some((value) => value && graphemeWidth(cellText(value)) === 2) ? 2 : 1;
-      const widestVisual = line.cells.reduce((max, value) => Math.max(max, value ? graphemeWidth(cellText(value)) * cellStyle(value).fontSize / BASE_FONT_SIZE : 0), 0);
-      if (visualReflow && widestVisual > visualWidth + 1e-9) throw new EditorError("선택 너비가 가장 큰 글자보다 좁습니다. 글자 크기를 줄이거나 영역을 넓혀 주세요.");
-      if (!visualReflow && targetWidth < widest) {
+      const widest = line.cells.some((value) => value && contentWidth(value) === 2) ? 2 : 1;
+      if (targetWidth < widest) {
         throw new EditorError("전각 문자를 포함한 선택 영역의 너비는 두 칸 이상이어야 합니다.");
       }
-      const startX = line.lineStartX >= targetX1 && line.lineStartX <= targetX2 - widest &&
-        (!visualReflow || line.lineStartX - targetX1 + widestVisual <= visualWidth)
-        ? line.lineStartX : targetX1;
+      const startX = line.lineStartX >= targetX1 && line.lineStartX <= targetX2 - widest ? line.lineStartX : targetX1;
       let x = startX;
       let row = targetHeight;
-      const available = visualWidth - (startX - targetX1);
-      let used = 0;
-      let previousScale = 1;
-      rowLayouts[row] = { startX, usedEndX: startX, lineIndex, remaining: available };
-      for (const [index, value] of line.cells.entries()) {
+      rowLayouts[row] = { startX, usedEndX: startX, lineIndex };
+      for (const value of line.cells) {
         if (value === "") continue;
-        const width = value === null ? 1 : graphemeWidth(cellText(value));
-        const scale = value ? cellStyle(value).fontSize / BASE_FONT_SIZE
-          : (line.cells[index + 1] ? previousScale : 1);
-        const advance = width * scale;
-        if (visualReflow ? used > 0 && used + advance > available + 1e-9 : x + width > targetX2) {
+        const width = value === null ? 1 : contentWidth(value);
+        if (x + width > targetX2) {
           x = startX; row += 1;
-          used = 0;
-          rowLayouts[row] = { startX, usedEndX: startX, lineIndex, remaining: available };
+          rowLayouts[row] = { startX, usedEndX: startX, lineIndex };
         }
         if (value !== null) placed.push({ x, y: safeAdd(selection.y1, row), value });
         x = safeAdd(x, width);
-        used += advance;
-        previousScale = value ? scale : 1;
         rowLayouts[row].usedEndX = x;
-        rowLayouts[row].remaining = Math.max(0, available - used);
       }
       targetHeight = row + 1;
     }
     assertTextRasterSize(targetWidth, targetHeight);
-    let target: Selection = {
+    const target: Selection = {
       x1: targetX1, y1: selection.y1, x2: targetX2,
       y2: safeAdd(selection.y1, targetHeight),
     };
-    if (visualReflow) {
-      const rows = rowLayouts.map((row, index) => ({ y: safeAdd(selection.y1, index), x1: targetX1,
-        x2: safeAdd(row.usedEndX, Math.floor(row.remaining + 1e-9)) }));
-      let maxX = targetX1 + 1;
-      for (const row of rows) maxX = Math.max(maxX, row.x2);
-      target = { ...target, x2: maxX, rows };
-      assertTextRasterSize(target.x2 - target.x1, targetHeight);
-    }
 
     const before = snapshotState(
       this.cursor,
@@ -1350,7 +1522,7 @@ export class EditorModel {
       // Only real glyph footprints collide. Empty space in the selection can adopt text.
       const collisionCells = new Set<string>();
       for (const cell of placed) {
-        for (let offset = 0; offset < graphemeWidth(cellText(cell.value)); offset += 1) {
+        for (let offset = 0; offset < contentWidth(cell.value); offset += 1) {
           collisionCells.add(coordinateKey(cell.x + offset, cell.y));
         }
       }
@@ -1365,7 +1537,7 @@ export class EditorModel {
     }
     for (const cell of placed) {
       transaction.set(cell.x, cell.y, cell.value);
-      if (graphemeWidth(cellText(cell.value)) === 2) transaction.set(cell.x + 1, cell.y, "");
+      if (contentWidth(cell.value) === 2) transaction.set(cell.x + 1, cell.y, "");
     }
     // Preserve the original logical line boundaries when adopting new text.
     let nextReflow = selectionReflow;
@@ -1399,6 +1571,64 @@ export class EditorModel {
     );
   }
 
+  private resizeScaledSelection(selection: Selection, x1: number, x2: number, edge: "left" | "right"): void {
+    const width = x2 - x1;
+    const shrinking = width < selection.x2 - selection.x1;
+    if (width === selection.x2 - selection.x1) return;
+    if (!shrinking && !this.selectionReflow) {
+      this.selection = { ...selection, x1, x2 };
+      this.emit();
+      return;
+    }
+    const transaction = new Transaction(this.document);
+    const reflow = this.selectionReflow ?? this.captureSelectionReflow(transaction, selection, selection.x2 - selection.x1);
+    const placed: PlacedCell[] = [];
+    const rows: Array<{ y: number; x: number; end: number; line: number }> = [];
+    let y = selection.y1;
+    for (const [lineIndex, line] of reflow.lines.entries()) {
+      const widest = line.cells.reduce((max, cell) => Math.max(max, cell ? contentWidth(cell) : 1), 1);
+      if (widest > width) throw new EditorError("선택 너비가 가장 큰 글자보다 좁습니다. 영역을 넓혀 주세요.");
+      const start = line.lineStartX >= x1 && line.lineStartX + widest <= x2 ? line.lineStartX : x1;
+      let x = start, height = 1;
+      for (const value of line.cells) {
+        if (value === "") continue;
+        const advance = value ? contentWidth(value) : 1;
+        if (x + advance > x2) {
+          rows.push({ y, x: start, end: x, line: lineIndex });
+          y = safeAdd(y, height); x = start; height = 1;
+        }
+        if (value) {
+          placed.push({ position: { x, y }, value: { text: cellText(value), style: cellStyle(value) } });
+          height = Math.max(height, textHeightInCells(cellStyle(value)));
+        }
+        x = safeAdd(x, advance);
+      }
+      rows.push({ y, x: start, end: x, line: lineIndex });
+      y = safeAdd(y, height);
+    }
+    const target: Selection = { x1, x2, y1: selection.y1, y2: y };
+    const before = snapshotState(this.cursor, selection, this.selectionReflow, this.typingStyle);
+    let outside = transaction.entries().filter((cell) => !contains(footprint(cell), selection));
+    outside = this.overwriteMode ? outside.filter((cell) => !intersects(footprint(cell), target))
+      : pushOutside(outside, placed.map(cellRect), shrinking ? { x: 0, y: 1 } : { x: edge === "left" ? -1 : 1, y: 0 });
+    const adopted = outside.some((cell) => contains(footprint(cell), target));
+    transaction.replace([...outside, ...placed]);
+    let nextReflow = reflow;
+    if (adopted) {
+      const lines = reflow.lines.map((line) => ({ cells: [] as Array<CellContent | null>, lineStartX: line.lineStartX }));
+      for (const row of rows) {
+        const neighbors = outside.filter((cell) => cell.position.y === row.y && contains(footprint(cell), target));
+        const start = Math.min(row.x, ...neighbors.map((cell) => cell.position.x));
+        const end = Math.max(row.end, ...neighbors.map((cell) => cell.position.x + contentWidth(cell.value)));
+        const line = lines[row.line];
+        line.lineStartX = Math.min(line.lineStartX, start);
+        for (let x = start; x < end; x++) line.cells.push(this.selectedRasterCell(transaction, target, x, row.y));
+      }
+      nextReflow = { lines };
+    }
+    this.commit(transaction, before, { x: x1, y: selection.y1 }, target, nextReflow);
+  }
+
   resizeSelectionVertical(
     edge: "top" | "bottom",
     boundaryY: number,
@@ -1423,23 +1653,12 @@ export class EditorModel {
     this.emit();
   }
 
+  selectionContent(): Array<Array<CellContent | null>> {
+    return this.selection ? contentRows(this.document, this.selection) : [];
+  }
+
   copySelection(): string {
-    const selection = this.selection;
-    if (!selection) return "";
-    const width = selection.x2 - selection.x1;
-    const height = selection.y2 - selection.y1;
-    assertTextRasterSize(width, height);
-    const lines: string[] = [];
-    const transaction = new Transaction(this.document);
-    for (let y = selection.y1; y < selection.y2; y += 1) {
-      let line = "";
-      const range = selectionRowRange(selection, y);
-      for (let x = range.x1; x < range.x2; x += 1) {
-        line += cellText(this.selectedRasterCell(transaction, selection, x, y) ?? " ");
-      }
-      lines.push(line);
-    }
-    return lines.join("\n");
+    return this.selectionContent().map((line) => line.map((cell) => cellText(cell ?? " ")).join("")).join("\n");
   }
 
   search(query: string): SearchResult[] {
@@ -1474,7 +1693,7 @@ export class EditorModel {
     for (const cell of cells) {
       const previousCell = run.at(-1);
       const previous = previousCell?.[0];
-      const previousWidth = previousCell ? graphemeWidth(previousCell[1]) : 1;
+      const previousWidth = previousCell ? textWidthInCells(previousCell[1], this.document.getStyle(previousCell[0].x, previousCell[0].y)) : 1;
       if (previous) {
         if (previous.y === cell[0].y && previous.x + previousWidth + 1 === cell[0].x) {
           run.push([
