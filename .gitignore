@@ -4,6 +4,7 @@ coverage/
 .vite/
 .agents/
 .codex/
+.playwright-mcp/
 *.log
 .env
 .env.*
