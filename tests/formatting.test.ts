@@ -311,6 +311,21 @@ test("layout cache, clipped visibility and bounds update without changing any gr
   }
 });
 
+test("layout bounds include every glyph extent regardless of anchor order", () => {
+  const document = new SparseDocument();
+  document.setCell(5, 0, "B");
+  document.setCell(-65, -10, "한", { ...large, fontSize: 100 });
+  document.setCell(0, -10, "A");
+  const layout = getTextLayout(document);
+  assert.deepEqual(layout.bounds, { minX: -65, minY: -10, maxX: 135, maxY: 90 });
+  assert.equal(layout.rowHeight(-10), 100);
+  document.deleteCell(-65, -10);
+  assert.deepEqual(getTextLayout(document).bounds, { minX: 0, minY: -10, maxX: 6, maxY: 1 });
+  document.deleteCell(0, -10);
+  document.deleteCell(5, 0);
+  assert.equal(getTextLayout(document).bounds, null);
+});
+
 test("fixed screen rectangles select only fully enclosed mixed-size glyphs", () => {
   const editor = new EditorModel(); editor.insertText("abcdefgh"); editor.enter(); editor.applyStyle(large); editor.insertText("ABCD");
   editor.setSelection(getTextLayout(editor.document).selectionFromDrag({ x: 0, y: 0 }, { x: 4, y: 2 }));

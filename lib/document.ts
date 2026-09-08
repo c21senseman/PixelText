@@ -62,8 +62,9 @@ export class SparseDocument {
   private readonly dirtyRevisions = new Map<ChunkKey, number>();
   private revision = 0;
   private storedCellCountValue = 0;
-  private countRevision = -1;
-  private countValue = 0;
+  private readonly dirtyCountRows = new Set<number>();
+  private readonly rowSpaceCounts = new Map<number, number>();
+  private interCharacterSpaceCount = 0;
   private readonly coverage = new GlyphCoverage();
 
   get contentRevision(): number { return this.revision; }
@@ -88,6 +89,7 @@ export class SparseDocument {
   }
 
   private touchRow(y: number, key: ChunkKey, hasCell = true): void {
+    this.dirtyCountRows.add(y);
     const row = this.rowIndex.get(y) ?? { revision: this.revision, chunks: new Set<ChunkKey>() };
     if (!hasCell) {
       const chunk = this.chunks.get(key);
@@ -133,15 +135,20 @@ export class SparseDocument {
   }
 
   get cellCount(): number {
-    if (this.countRevision !== this.revision) {
-      this.countValue = this.storedCellCountValue;
-      for (const [p, text] of this.entries()) {
+    // A one-cell gap depends only on anchors and widths in its own row.
+    // Recount edited rows lazily, once per batch of document changes.
+    for (const y of this.dirtyCountRows) {
+      let spaces = 0;
+      for (const [p, text] of this.entriesInRow(y)) {
         const end = p.x + textWidthInCells(text, this.getStyle(p.x, p.y));
-        if (Number.isSafeInteger(end + 1) && this.getCell(end, p.y) === null && this.getCell(end + 1, p.y) !== null) this.countValue++;
+        if (Number.isSafeInteger(end + 1) && this.getCell(end, p.y) === null && this.getCell(end + 1, p.y) !== null) spaces++;
       }
-      this.countRevision = this.revision;
+      this.interCharacterSpaceCount += spaces - (this.rowSpaceCounts.get(y) ?? 0);
+      if (spaces) this.rowSpaceCounts.set(y, spaces);
+      else this.rowSpaceCounts.delete(y);
     }
-    return this.countValue;
+    this.dirtyCountRows.clear();
+    return this.storedCellCountValue + this.interCharacterSpaceCount;
   }
 
   footprint(x: number, y: number): Footprint {

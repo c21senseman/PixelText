@@ -551,6 +551,12 @@ export function clampMinimapTarget(target: Position, bounds: Bounds): Position {
   };
 }
 
+const minimapCache = new WeakMap<HTMLCanvasElement, {
+  document: SparseDocument;
+  key: string;
+  transform: MinimapTransform;
+}>();
+
 export function drawMinimap(
   canvas: HTMLCanvasElement,
   document: SparseDocument,
@@ -561,6 +567,13 @@ export function drawMinimap(
   const resized = resizeCanvas(canvas, 4);
   if (!resized) return null;
   const { context, viewport, dpr } = resized;
+  // Cursor, selection and composition updates do not alter the minimap.
+  // Canvas dimensions and DPR are included because resizing clears its pixels.
+  const key = [document.contentRevision, viewport.width, viewport.height, dpr,
+    camera.x, camera.y, camera.zoom, editorViewport.width, editorViewport.height,
+    minimapZoom].join(",");
+  const saved = minimapCache.get(canvas);
+  if (saved?.document === document && saved.key === key) return saved.transform;
   context.clearRect(0, 0, viewport.width, viewport.height);
 
   const viewBounds = viewportCellBounds(camera, editorViewport);
@@ -640,7 +653,9 @@ export function drawMinimap(
   context.strokeRect(cameraX + 0.75, cameraY + 0.75, cameraWidth - 1.5, cameraHeight - 1.5);
   context.restore();
 
-  return { worldMinX, worldMinY, scale, offsetX, offsetY, padding };
+  const transform = { worldMinX, worldMinY, scale, offsetX, offsetY, padding };
+  minimapCache.set(canvas, { document, key, transform });
+  return transform;
 }
 
 export function minimapToWorld(

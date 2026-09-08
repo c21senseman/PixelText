@@ -10,59 +10,45 @@ export type LayoutGlyph = {
   rect: Selection;
 };
 type LayoutRow = {
-  y: number;
   revision: number;
   height: number;
-  maxScale: number;
-  // Glyph y coordinates are relative to the row, so vertical reflow can reuse
-  // unchanged rows without visiting every character in the document.
-  glyphs: LayoutGlyph[];
+  bounds: Bounds;
 };
 
 export class TextLayout {
   private readonly rows = new Map<number, LayoutRow>();
-  private readonly sortedRows: LayoutRow[];
   readonly bounds: Bounds | null;
 
   constructor(private readonly document: SparseDocument, previous?: TextLayout) {
-    for (const y of [...document.rowKeys()].sort((a, b) => a - b)) {
+    for (const y of document.rowKeys()) {
       const revision = document.rowRevision(y);
       const saved = previous?.rows.get(y);
       if (saved?.revision === revision) {
-        this.rows.set(y, { ...saved });
+        this.rows.set(y, saved);
         continue;
       }
-      const cells = [...document.entriesInRow(y)].map(([position, text]) => ({
-        position, text, style: document.getStyle(position.x, y),
-      })).sort((a, b) => a.position.x - b.position.x);
+      // Rendering queries the document's spatial index directly. Retain only
+      // row metrics here instead of a second copy of every glyph and style.
       let maxScale = 0;
-      for (let i = 0; i < cells.length; i += 1) {
-        const cell = cells[i];
-        const scale = cell.style.fontSize / BASE_FONT_SIZE;
+      let minX = Infinity;
+      let maxX = -Infinity;
+      for (const [position, text] of document.entriesInRow(y)) {
+        const style = document.getStyle(position.x, y);
+        const scale = style.fontSize / BASE_FONT_SIZE;
         maxScale = Math.max(maxScale, scale);
+        minX = Math.min(minX, position.x);
+        maxX = Math.max(maxX, position.x + textWidthInCells(text, style));
       }
       const height = Math.max(1, Math.ceil(maxScale));
-      const glyphs = cells.map((cell) => {
-        const scale = cell.style.fontSize / BASE_FONT_SIZE;
-        const x = cell.position.x;
-        const y = 0;
-        return { ...cell, rect: { x1: x, y1: y,
-          x2: x + textWidthInCells(cell.text, cell.style), y2: y + scale } };
-      });
-      this.rows.set(y, { y, revision, height, maxScale, glyphs });
+      this.rows.set(y, { revision, height,
+        bounds: { minX, minY: y, maxX, maxY: y + maxScale } });
     }
-    this.sortedRows = [...this.rows.values()];
     let bounds: Bounds | null = null;
-    for (const row of this.sortedRows) {
-      if (!row.glyphs.length) continue;
-      const x1 = row.glyphs[0].rect.x1;
-      const x2 = row.glyphs[row.glyphs.length - 1].rect.x2;
-      const y1 = row.y;
-      const y2 = y1 + row.maxScale;
-      if (!bounds) bounds = { minX: x1, minY: y1, maxX: x2, maxY: y2 };
+    for (const row of this.rows.values()) {
+      if (!bounds) bounds = { ...row.bounds };
       else {
-        bounds.minX = Math.min(bounds.minX, x1); bounds.minY = Math.min(bounds.minY, y1);
-        bounds.maxX = Math.max(bounds.maxX, x2); bounds.maxY = Math.max(bounds.maxY, y2);
+        bounds.minX = Math.min(bounds.minX, row.bounds.minX); bounds.minY = Math.min(bounds.minY, row.bounds.minY);
+        bounds.maxX = Math.max(bounds.maxX, row.bounds.maxX); bounds.maxY = Math.max(bounds.maxY, row.bounds.maxY);
       }
     }
     this.bounds = bounds;
