@@ -88,19 +88,19 @@ test("Enter and line joining preserve wide text and connected lower rows", () =>
   assert.equal(exportTxt(editor.document), before);
 });
 
-test("partial wide selections keep their bounds and exclude boundary glyphs", () => {
+test("partial wide selections keep their bounds and include half-covered boundary glyphs", () => {
   const editor = new EditorModel();
   editor.insertText("한A漢");
   editor.setSelection({ x1: 1, y1: 0, x2: 4, y2: 1 });
   assert.deepEqual(editor.selection, { x1: 1, y1: 0, x2: 4, y2: 1 });
-  assert.equal(editor.copySelection(), " A ");
+  assert.equal(editor.copySelection(), "한A漢");
   editor.moveSelection(2, 1);
-  assert.equal(editor.document.getCell(0, 0), "한");
-  assert.equal(editor.document.getCell(3, 0), "漢");
-  assert.equal(editor.copySelection(), " A ");
+  assert.equal(editor.document.getCell(0, 0), null);
+  assert.equal(editor.document.getCell(3, 0), null);
+  assert.equal(editor.copySelection(), "한A漢");
   assertWholeCharacters(editor.document);
   editor.deleteSelection();
-  assert.equal(editor.document.storedCellCount, 2);
+  assert.equal(editor.document.storedCellCount, 0);
   editor.undo(); editor.undo();
   assert.equal(exportTxt(editor.document), "한A漢");
 });
@@ -261,15 +261,15 @@ test("wide glyph footprints cannot overflow the safe coordinate range", () => {
   assert.throws(() => new EditorModel().setSelection({ x1: 0, y1: 0, x2: Infinity, y2: 1 }), /좌표/);
 });
 
-test("deleting or backspacing clipped selections preserves both boundary glyphs", () => {
+test("deleting or backspacing clipped selections removes half-covered boundary glyphs", () => {
   for (const command of ["deleteSelection", "deleteForward", "backspace"] as const) {
     const editor = new EditorModel();
     editor.insertText("한A漢B");
     editor.setSelection({ x1: 1, y1: 0, x2: 4, y2: 1 });
     editor[command]();
-    assert.equal(editor.document.getCell(0, 0), "한");
+    assert.equal(editor.document.getCell(0, 0), null);
     assert.equal(editor.document.getCell(2, 0), null);
-    assert.equal(editor.document.getCell(3, 0), "漢");
+    assert.equal(editor.document.getCell(3, 0), null);
     assert.equal(editor.document.getCell(5, 0), "B");
     assertWholeCharacters(editor.document);
     editor.undo();
@@ -277,14 +277,14 @@ test("deleting or backspacing clipped selections preserves both boundary glyphs"
   }
 });
 
-test("a selection covering either half of a wide glyph copies a blank and deletes nothing", () => {
+test("a selection covering either half of a wide glyph copies and deletes the whole character", () => {
   for (const x of [-1, 0]) {
     const editor = new EditorModel();
     editor.document.setCell(-1, 0, "한");
     editor.setSelection({ x1: x, y1: 0, x2: x + 1, y2: 1 });
-    assert.equal(editor.copySelection(), " ");
+    assert.equal(editor.copySelection(), "한");
     editor.deleteSelection();
-    assert.equal(editor.document.getCell(-1, 0), "한");
+    assert.equal(editor.document.getCell(-1, 0), null);
     assert.notEqual(editor.document.getRasterCell(editor.cursor.x, editor.cursor.y), "");
   }
 });
@@ -297,25 +297,25 @@ test("selection growth and vertical resize never expand horizontal bounds", () =
   editor.resizeSelectionHorizontal("right", 3);
   editor.resizeSelectionHorizontal("right", 9);
   assert.equal(editor.selection?.x2, 9);
-  assert.equal(editor.copySelection(), "ABCDEFGH ");
+  assert.equal(editor.copySelection(), "ABCDEFGH漢");
   editor.resizeSelectionHorizontal("right", 4);
-  assert.equal(editor.copySelection(), "ABCD\nEFGH");
-  assert.equal(editor.document.getCell(8, 0), "漢");
+  assert.equal(editor.copySelection(), "ABCD\nEFGH\n漢  ");
+  assert.equal(editor.document.getCell(8, 0), null);
   editor.document.setCell(3, 3, "한");
   editor.resizeSelectionVertical("bottom", 4);
   assert.equal(editor.selection?.x2, 4);
-  assert.equal(editor.copySelection().split("\n")[3], "    ");
+  assert.equal(editor.copySelection().split("\n")[3], "   한");
 });
 
-test("replacing a clipped selection keeps the excluded wide character intact", () => {
+test("replacing a clipped selection replaces the half-covered wide character", () => {
   for (const overwrite of [false, true]) {
     const editor = new EditorModel();
     editor.insertText("한AB");
     editor.overwriteMode = overwrite;
     editor.setSelection({ x1: 1, y1: 0, x2: 3, y2: 1 });
     editor.insertText("X");
-    assert.equal(editor.document.getCell(0, 0), "한");
-    assert.equal(editor.document.getCell(2, 0), "X");
+    assert.equal(editor.document.getCell(0, 0), null);
+    assert.equal(editor.document.getCell(1, 0), "X");
     assertWholeCharacters(editor.document);
     editor.undo();
     assert.equal(exportTxt(editor.document), "한AB");

@@ -12,6 +12,19 @@ export function contains(a: Footprint, selection: Selection): boolean {
   return a.x >= selection.x1 && a.y >= selection.y1 && a.x + a.width <= selection.x2 && a.y + a.height <= selection.y2;
 }
 
+// Select whole glyphs once at least half of their footprint is covered.
+export function isGlyphSelected(a: Footprint, selection: Selection): boolean {
+  const overlap = (x1: number, y1: number, x2: number, y2: number) =>
+    Math.max(0, Math.min(a.x + a.width, x2) - Math.max(a.x, x1)) *
+    Math.max(0, Math.min(a.y + a.height, y2) - Math.max(a.y, y1));
+  let area = overlap(selection.x1, selection.y1, selection.x2, selection.y2);
+  for (const row of selection.rows ?? []) {
+    const y1 = Math.max(row.y, selection.y1), y2 = Math.min(row.y + 1, selection.y2);
+    area += overlap(row.x1, y1, row.x2, y2) - overlap(selection.x1, y1, selection.x2, y2);
+  }
+  return area > 0 && area >= a.width * a.height / 2;
+}
+
 // Index large glyphs by their footprint, without allocating every covered cell.
 // Very large font sizes use a separate sparse list instead of an enormous grid.
 export class GlyphCoverage {

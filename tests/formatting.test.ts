@@ -92,23 +92,63 @@ test("uniform and mixed toolbar properties track selections and size edits are o
   editor.redo(); assert.equal(editor.formatting.fontSize, 3);
 });
 
-test("partially selected large glyphs are excluded on all four boundaries", () => {
+test("large glyphs are selected at half coverage on all four boundaries", () => {
   for (const s of [
-    { x1: 1, x2: 4, y1: 0, y2: 2 }, { x1: 0, x2: 3, y1: 0, y2: 2 },
+    { x1: 2, x2: 4, y1: 0, y2: 2 }, { x1: 0, x2: 2, y1: 0, y2: 2 },
     { x1: 0, x2: 4, y1: 1, y2: 2 }, { x1: 0, x2: 4, y1: 0, y2: 1 },
+    { x1: 1, x2: 4, y1: 0, y2: 2 },
   ]) {
     const editor = new EditorModel(); editor.applyStyle(large); editor.insertText("한"); editor.setSelection(s);
+    assert.equal(editor.copySelection(), "한");
+    editor.toggleStyle("italic");
+    assert.equal(editor.document.getStyle(0, 0).italic, true);
+    editor.moveSelection(-3, -2);
+    assert.equal(editor.document.getCell(-3, -2), "한");
+    assert.equal(editor.copySelection(), "한");
+    editor.deleteSelection();
+    assert.equal(editor.document.storedCellCount, 0);
+    editor.undo(); editor.undo(); editor.undo();
+    assert.deepEqual(editor.document.getStyle(0, 0), large);
+  }
+});
+
+test("less than half coverage excludes large glyphs including corner overlaps", () => {
+  for (const s of [
+    { x1: 0, x2: 1, y1: 0, y2: 2 }, { x1: 3, x2: 4, y1: 0, y2: 2 },
+    { x1: 0, x2: 2, y1: 0, y2: 1 }, { x1: 1, x2: 4, y1: 1, y2: 2 },
+  ]) {
+    const editor = new EditorModel(); editor.applyStyle(large); editor.insertText("한"); editor.setSelection(s);
+    assert.equal(editor.copySelection().includes("한"), false);
     editor.toggleStyle("italic"); editor.deleteSelection();
     assert.equal(editor.document.getCell(0, 0), "한");
     assert.deepEqual(editor.document.getStyle(0, 0), large);
   }
+});
+
+test("formatting and replacing half-covered wide text includes the whole glyph", () => {
   const editor = new EditorModel(); editor.insertText("한AB");
   select(editor, 1, 4); editor.applyStyle(large);
-  assert.deepEqual(editor.document.getStyle(0, 0), DEFAULT_TEXT_STYLE);
-  assert.deepEqual(editor.document.getStyle(2, 0), large);
+  assert.deepEqual(editor.document.getStyle(0, 0), large);
+  assert.deepEqual(editor.document.getStyle(4, 0), large);
   editor.insertText("Z");
-  assert.equal(exportTxt(editor.document), "한Z");
-  assert.deepEqual(editor.document.getStyle(2, 0), large);
+  assert.equal(exportTxt(editor.document), "Z");
+  assert.deepEqual(editor.document.getStyle(0, 0), large);
+});
+
+test("moving a half-selected large glyph clears collisions beyond the selection edge", () => {
+  for (const overwrite of [false, true]) {
+    const editor = new EditorModel();
+    editor.document.setCell(0, 0, "한", large);
+    editor.document.setCell(4, 0, "X");
+    editor.overwriteMode = overwrite;
+    select(editor, 2, 4, 0, 2);
+    editor.moveSelection(4, 0);
+    assert.equal(editor.document.getCell(4, 0), "한");
+    disjoint(editor);
+    editor.undo();
+    assert.equal(editor.document.getCell(0, 0), "한");
+    assert.equal(editor.document.getCell(4, 0), "X");
+  }
 });
 
 test("mixed-size insertion, deletion, splits and joins preserve styles and nonoverlapping footprints", () => {

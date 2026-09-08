@@ -1,5 +1,5 @@
 import type { SparseDocument } from "./document";
-import { contains } from "./coverage";
+import { isGlyphSelected } from "./coverage";
 import { contentWidth, type CellContent } from "./formatting";
 import type { PlacedCell } from "./grid-placement";
 import { assertTextRasterSize, EditorError, MAX_TEXT_CELLS, selectionRowRange, type Selection } from "./types";
@@ -9,9 +9,10 @@ import { assertTextRasterSize, EditorError, MAX_TEXT_CELLS, selectionRowRange, t
 export function placedContentRows(cells: PlacedCell[], selection: Selection): Array<{ y: number; cells: Array<CellContent | null> }> {
   const rows = new Map<number, PlacedCell[]>();
   for (const cell of cells) {
-    const { x, y } = cell.position, range = selectionRowRange(selection, y);
-    if (!contains({ x, y, width: contentWidth(cell.value), height: cell.value.style.fontSize }, { ...selection, x1: range.x1, x2: range.x2 })) continue;
-    const row = rows.get(y) ?? []; row.push(cell); rows.set(y, row);
+    const { x, y } = cell.position;
+    if (!isGlyphSelected({ x, y, width: contentWidth(cell.value), height: cell.value.style.fontSize }, selection)) continue;
+    const outputY = Math.max(y, selection.y1);
+    const row = rows.get(outputY) ?? []; row.push(cell); rows.set(outputY, row);
   }
   const rowKeys = [...rows.keys()].sort((a, b) => a - b);
   const lines: Array<{ y: number; cells: Array<CellContent | null> }> = [];
@@ -34,7 +35,7 @@ export function placedContentRows(cells: PlacedCell[], selection: Selection): Ar
       for (let i = 0; i < gap; i++) line.push(null);
       line.push(cell.value);
       x = cell.position.x + contentWidth(cell.value);
-      coveredUntil = Math.max(coveredUntil, y + cell.value.style.fontSize);
+      coveredUntil = Math.max(coveredUntil, cell.position.y + cell.value.style.fontSize);
     }
     const gap = Math.max(0, range.x2 - x); reserve(gap, line.length + gap);
     for (let i = 0; i < gap; i++) line.push(null);

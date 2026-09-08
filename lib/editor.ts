@@ -2,7 +2,7 @@ import { contentRows, placedContentRows } from "./text-raster";
 import { SparseDocument } from "./document";
 import { getTextLayout } from "./layout";
 import { DEFAULT_TEXT_STYLE, cellStyle, cellText, contentWidth, textWidthInCells, textHeightInCells, parseTextStyle, sameStyle, type CellContent, type FormattingState, type StyleToggle, type TextStyle } from "./formatting";
-import { GlyphCoverage, contains, intersects } from "./coverage";
+import { GlyphCoverage, isGlyphSelected, intersects } from "./coverage";
 import { placeResizedText, type PlacedCell } from "./grid-placement";
 import { footprint, cellRect, moveCell, connectedCells, pushOutside, textRun } from "./spatial";
 import {
@@ -419,13 +419,12 @@ export class EditorModel {
     const range = selectionRowRange(selection, y);
     if (x < range.x1 || x >= range.x2) return null;
     const value = transaction.read(x, y);
-    if (value === "") {
-      const anchor = transaction.anchorAt(x, y);
-      if (!anchor) return null;
-      const source = transaction.read(anchor.x, anchor.y);
-      if (!source || anchor.x < range.x1 || anchor.x + contentWidth(source) > range.x2 || y + textHeightInCells(cellStyle(source)) > selection.y2) return null;
-    }
-    if (value && (contentWidth(value) > range.x2 - x || y + textHeightInCells(cellStyle(value)) > selection.y2)) return null;
+    const anchor = value === "" ? transaction.anchorAt(x, y) : { x, y };
+    if (!anchor) return null;
+    const source = transaction.read(anchor.x, anchor.y);
+    if (!source || !isGlyphSelected({ ...anchor, width: contentWidth(source), height: textHeightInCells(cellStyle(source)) }, selection)) return null;
+    // Include a glyph starting left of the selection at its first selected column.
+    if (value === "" && x === range.x1 && anchor.x < x) return source;
     return value;
   }
 
@@ -446,7 +445,7 @@ export class EditorModel {
   ): Position {
     if (transaction.scaled) {
       const cells = transaction.entries();
-      const removed = new Set(cells.filter((cell) => contains(footprint(cell), selection)));
+      const removed = new Set(cells.filter((cell) => isGlyphSelected(footprint(cell), selection)));
       const moving = new Set<PlacedCell>();
       for (const y of new Set(cells.filter((cell) => cell.position.y >= selection.y1 && cell.position.y < selection.y2).map((cell) => cell.position.y))) {
         if (cells.some((cell) => cell.position.y === y && intersects(footprint(cell), selection) && !removed.has(cell))) continue;
@@ -1142,10 +1141,7 @@ export class EditorModel {
     this.document.forEachInSelection(
       target,
       (x, y) => {
-        const belongsToSelection =
-          isPointInSelection({ x, y }, selection) &&
-          this.document.footprint(x, y).width <= selectionRowRange(selection, y).x2 - x &&
-          y + this.document.footprint(x, y).height <= selection.y2;
+        const belongsToSelection = isGlyphSelected(this.document.footprint(x, y), selection);
         if (!belongsToSelection) overlaps = true;
       },
     );
@@ -1331,14 +1327,16 @@ export class EditorModel {
       this.typingStyle,
     );
     const transaction = new Transaction(this.document);
-    if (transaction.scaled) {
+    if (transaction.scaled || snapshot.some((cell) => cell.x < selection.x1 || cell.x + contentWidth(cell.value) > selection.x2)) {
       const cells = transaction.entries();
-      const moving = cells.filter((cell) => contains(footprint(cell), selection));
+      const moving = cells.filter((cell) => isGlyphSelected(footprint(cell), selection));
       const movingSet = new Set(moving);
       let outside = cells.filter((cell) => !movingSet.has(cell));
       const pushDirection = options.pushDirection ?? cardinalStepBetween(options.lastNonOverlappingOffset ?? { x: 0, y: 0 }, { x: dx, y: dy });
-      outside = this.overwriteMode ? outside.filter((cell) => !intersects(footprint(cell), target)) : pushOutside(outside, [target], pushDirection);
-      transaction.replace([...outside, ...moving.map((cell) => moveCell(cell, dx, dy))]);
+      const moved = moving.map((cell) => moveCell(cell, dx, dy));
+      const targets = [target, ...moved.map(cellRect)];
+      outside = this.overwriteMode ? outside.filter((cell) => !targets.some((rect) => intersects(footprint(cell), rect))) : pushOutside(outside, targets, pushDirection);
+      transaction.replace([...outside, ...moved]);
       this.commit(transaction, before, { x: target.x1, y: target.y1 }, target, translateSelectionReflow(this.selectionReflow, dx));
       return;
     }
@@ -1608,16 +1606,16 @@ export class EditorModel {
     }
     const target: Selection = { x1, x2, y1: selection.y1, y2: y };
     const before = snapshotState(this.cursor, selection, this.selectionReflow, this.typingStyle);
-    let outside = transaction.entries().filter((cell) => !contains(footprint(cell), selection));
+    let outside = transaction.entries().filter((cell) => !isGlyphSelected(footprint(cell), selection));
     outside = this.overwriteMode ? outside.filter((cell) => !intersects(footprint(cell), target))
       : pushOutside(outside, placed.map(cellRect), shrinking ? { x: 0, y: 1 } : { x: edge === "left" ? -1 : 1, y: 0 });
-    const adopted = outside.some((cell) => contains(footprint(cell), target));
+    const adopted = outside.some((cell) => isGlyphSelected(footprint(cell), target));
     transaction.replace([...outside, ...placed]);
     let nextReflow = reflow;
     if (adopted) {
       const lines = reflow.lines.map((line) => ({ cells: [] as Array<CellContent | null>, lineStartX: line.lineStartX }));
       for (const row of rows) {
-        const neighbors = outside.filter((cell) => cell.position.y === row.y && contains(footprint(cell), target));
+        const neighbors = outside.filter((cell) => cell.position.y === row.y && isGlyphSelected(footprint(cell), target));
         const start = Math.min(row.x, ...neighbors.map((cell) => cell.position.x));
         const end = Math.max(row.end, ...neighbors.map((cell) => cell.position.x + contentWidth(cell.value)));
         const line = lines[row.line];

@@ -1,4 +1,5 @@
 import { SparseDocument } from "./document";
+import { isGlyphSelected } from "./coverage";
 import { graphemeWidth, segmentGraphemes } from "./graphemes";
 import {
   Bookmark,
@@ -190,7 +191,12 @@ export function drawEditorCanvas(canvas: HTMLCanvasElement, options: DrawEditorO
   context.clearRect(0, 0, viewport.width, viewport.height);
   context.fillStyle = "#f7f7f4";
   context.fillRect(0, 0, viewport.width, viewport.height);
-  layout.forEachVisible(visible, (glyph) => drawGlyph(context, glyph, options.camera, viewport));
+  layout.forEachVisible(visible, (glyph) => {
+    const selection = options.selectionResizePreview ?? options.selection;
+    const selected = selection && isGlyphSelected({ x: glyph.rect.x1, y: glyph.rect.y1,
+      width: glyph.rect.x2 - glyph.rect.x1, height: glyph.rect.y2 - glyph.rect.y1 }, selection);
+    drawGlyph(context, glyph, options.camera, viewport, selected ? "rgba(49,62,199,0.94)" : undefined);
+  });
 
   if (options.selection) {
     const selection = options.selection;

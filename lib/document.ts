@@ -12,7 +12,7 @@ import { assertValidCellValue, graphemeWidth } from "./graphemes";
 import { DEFAULT_TEXT_STYLE, parseTextStyle, parseLegacyTextStyle, sameStyle, textWidthInCells, textHeightInCells, BASE_FONT_SIZE, type TextStyle, type StyledCell } from "./formatting";
 import { placeResizedText } from "./grid-placement";
 
-import { GlyphCoverage, contains, type Footprint } from "./coverage";
+import { GlyphCoverage, contains, isGlyphSelected, type Footprint } from "./coverage";
 
 export type ChunkKey = `${number},${number}`;
 export type Chunk = Map<number, string>;
@@ -347,12 +347,15 @@ export class SparseDocument {
     });
   }
 
-  forEachInSelection(selection: Selection, callback: (x: number, y: number, value: string) => void, fullyContained = false): void {
+  forEachInSelection(selection: Selection, callback: (x: number, y: number, value: string) => void, selectedOnly = false): void {
     this.forEachInRect(selection.x1, selection.y1, selection.x2, selection.y2, (x, y, value) => {
+      if (selectedOnly) {
+        if (isGlyphSelected(this.footprint(x, y), selection)) callback(x, y, value);
+        return;
+      }
       const range = selectionRowRange(selection, y);
-      const end = x + this.footprint(x, y).width;
-      if (end > range.x1 && x < range.x2 && (!fullyContained || (x >= range.x1 && end <= range.x2))) callback(x, y, value);
-    }, fullyContained);
+      if (x + this.footprint(x, y).width > range.x1 && x < range.x2) callback(x, y, value);
+    });
   }
 
   bounds(): Bounds | null {
